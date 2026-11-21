@@ -118,7 +118,7 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
     console.log('SETTINGS personality ->', sset.personality, '| page hides reads:', hidden, '| app settings:', JSON.stringify(appSet));
     if (sset.personality !== false || !hidden) fail('personality setting did not apply');
     await dash.$eval('input[data-set="personality"]', (el) => el.click());   // (the Settings list scrolls; click it directly) await sleep(500);
-    await dash.click('[data-a="close"]');
+    await dash.evaluate(() => window.showView('calls'));   // Settings is a page now; back to the calls
     const leaked = await discord.evaluate(() => typeof window.ctApp + '/' + typeof window.require);
     if (leaked !== 'undefined/undefined') fail('Discord page can see app APIs: ' + leaked);
   }

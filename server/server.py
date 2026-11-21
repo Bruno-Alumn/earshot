@@ -1461,7 +1461,7 @@ def persona_from_fields(summary: str, big5: dict, signals: dict, quotes: list) -
     """big5: {"O": (score, reason), ...}; signals: {"warmth": (score, reason), ...}."""
     summary = re.sub(r"\s+\([^()]{1,40}\)(?=\s+(?:is|comes|seems|sounds|was)\b)", "", summary, count=1)   # "Jo(h)n (Gator) comes across" -> "Jo(h)n comes across"
 
-    b = lambda k: big5.get(k, (3, ""))[0]
+    b = lambda k: (big5.get(k) or (3, ""))[0] or 3      # not rated counts as average for the trait words
     traits = [_SIG_TRAIT[k] for k, _ in PERSONA_SIGNALS if signals.get(k, (0, ""))[0] >= 2]
     for cond, word in [(b("E") >= 4, "outgoing"), (b("E") <= 2, "reserved"), (b("A") >= 4, "easygoing"),
                        (b("A") <= 2, "blunt"), (b("C") >= 4, "organised"), (b("S") <= 2, "tense"),
@@ -1495,7 +1495,7 @@ def persona_from_fields(summary: str, big5: dict, signals: dict, quotes: list) -
             out.append(f"- {s['label']}: {bar} {s['score']}/3{(': ' + s['note']) if s['note'] else ''}")
     if big:
         out.append("**Big Five (1-5):**")
-        out.extend(f"- {x['label']}: {x['score']}/5{(': ' + x['note']) if x['note'] else ''}" for x in big)
+        out.extend(f"- {x['label']}: not rated" if x["score"] is None else f"- {x['label']}: {x['score']}/5{(': ' + x['note']) if x['note'] else ''}" for x in big)
     if quotes:
         out.append("**In their words:**")
         out.extend(f'- "{q}"' for q in quotes[:3])
@@ -1732,34 +1732,6 @@ def persona_engine() -> str:
     return "claude" if current_settings()["personaModel"] == "claude" and claude_key() else "local"
 
 
-PERSONA_SYSTEM_CLAUDE = """You read how one person comes across in voice calls among a group of friends who mostly play games together, from automatic transcripts of what was said. This is an impression of their style with others, for fun, not a medical or psychological diagnosis.
-
-You get excerpts from their calls, oldest first. Lines marked ">>" are the person; lines marked "  ·" are other people speaking just before, for context. Judge only the person, and use the context to read their lines correctly: who they are replying to, whether something is a joke, banter or sarcasm, and whether a harsh word is aimed at someone or at the game.
-
-Calibrate for this setting:
-- Friends gaming trash-talk, swearing at the game and playful insults that both sides enjoy are normal here. Count antagonism only for real hostility, contempt or putting people down.
-- Self-focus means centring talk on themselves, bragging, wanting admiration, dismissing others; talking about their own play is not self-focus by itself.
-- Transcripts have errors and missing words. Don't build a rating on one odd line; look for patterns across calls.
-- If the lines don't show a trait, rate it low (signals) or average (Big Five) rather than guessing.
-
-Ratings:
-- Signals 0 to 3 (0 none, 1 a little, 2 clear, 3 strong): self_focus, antagonism, manipulation (flatters or guilt-trips to get their way, says one thing and means another), impulsiveness (reactive, volatile, blurts things out), warmth (notices others, supportive, includes people, kind).
-- Big Five 1 to 5 (3 is average): openness, conscientiousness, extraversion, agreeableness, stability (emotional stability: calm and steady vs tense and reactive).
-
-Write the summary as one plain sentence of at most 25 words on how they come across, calling them only by the name you are given (other names in the lines are other people). Each reason is at most 12 words, from their actual words. Quotes are up to three short things they said that show their style, copied from their lines."""
-
-
-def _persona_schema() -> dict:
-    def rated(lo, hi):
-        return {"type": "object", "properties": {"score": {"type": "integer", "enum": list(range(lo, hi + 1))}, "reason": {"type": "string"}},
-                "required": ["score", "reason"], "additionalProperties": False}
-    sig = ["self_focus", "antagonism", "manipulation", "impulsiveness", "warmth"]
-    big = ["openness", "conscientiousness", "extraversion", "agreeableness", "stability"]
-    props = {"summary": {"type": "string"}, **{k: rated(0, 3) for k in sig}, **{k: rated(1, 5) for k in big},
-             "quotes": {"type": "array", "items": {"type": "string"}}}
-    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
-
-
 _BIG_KEYS = {"openness": "O", "conscientiousness": "C", "extraversion": "E", "agreeableness": "A", "stability": "S"}
 
 
@@ -1779,8 +1751,69 @@ class PersonaError(Exception):
         self.retry = retry
 
 
-def claude_persona(name: str, excerpt: str, key: str) -> tuple[dict, str]:
-    """One read from Claude. Returns (built report, model that wrote it)."""
+def claude_persona(name: str, excerpt: str, key: str, n: int = 0, talk_ratio: float | None = None) -> tuple[dict, str]:
+    """One codebook read from Claude: it tags lines, score_codes() scores them.
+    Returns (built report, model that wrote it)."""
+    n = n or len(re.findall(r"(?m)^>> \[\d+\]", excerpt))
+    shown_name, name = name, "P"                       # the coders and the summary only ever see "P"
+    system = PERSONA_SYSTEM_CODEBOOK.replace("{codebook}", codebook_text())
+    chunks = excerpt_chunks(excerpt)
+
+    def tag(job):
+        (text, a, b), _coder = job
+        data, model = claude_json(system, _codebook_schema(), f"Part of P's calls, oldest first (lines {a} to {b}):\n\n{text}", key)
+        got = (data.get("codes") or {})
+        return {c: {x for x in (got.get(c) or []) if isinstance(x, int) and a <= x <= b} for c in CODEBOOK}, model
+
+    from concurrent.futures import ThreadPoolExecutor
+    jobs = [(ch, k) for ch in chunks for k in range(CODERS)]
+    with ThreadPoolExecutor(6) as pool:
+        runs = list(pool.map(tag, jobs))            # one failed call fails the read: a partial count would skew the scores
+    codes, agree, total = {c: [] for c in CODEBOOK}, 0, 0
+    by_code = {c: [0, 0] for c in CODEBOOK}        # per code: tags both passes gave, tags either gave
+    for i in range(len(chunks)):
+        mine = [runs[i * CODERS + k][0] for k in range(CODERS)]
+        for c in CODEBOOK:
+            both = set.intersection(*(m[c] for m in mine))
+            anyone = set.union(*(m[c] for m in mine))
+            codes[c] += sorted(both)
+            agree += len(both); total += len(anyone)
+            by_code[c][0] += len(both); by_code[c][1] += len(anyone)
+    agreement = round(agree / total, 2) if total else None     # share of tags every coder gave (1.0: they all agreed)
+    model = runs[-1][1] if runs else CLAUDE_MODEL
+    lines = {int(m.group(1)): m.group(2) for m in re.finditer(r"(?m)^>> \[(\d+)\] (.*)$", excerpt)}
+    # Lines that count: ones that could show anything (3+ words) or got a code; never garbled ones.
+    # Otherwise people who say "yeah" and "ok" a lot, or whose speech is transcribed badly, would look like they show less of everything.
+    tagged = {x for c, xs in codes.items() if c != "GARBLED" for x in xs}
+    garbled = set(codes.get("GARBLED", [])) - tagged
+    eligible = sorted(x for x, t in lines.items() if x not in garbled and (len(t.split()) >= 3 or x in tagged))
+    sc = score_codes(codes, n, talk_ratio, denom=len(eligible) or n)
+    spread = lambda xs: [xs[round(i * (len(xs) - 1) / 2)] for i in range(3)] if len(xs) > 3 else xs   # oldest, middle, newest
+    examples = "\n".join(f"{c} ({sc['counts'][c]}): " + " | ".join(lines[x][:80] for x in dict.fromkeys(spread(sc["lines"][c])) if x in lines)
+                         for c in sorted(CODEBOOK, key=lambda c: -sc["counts"][c]) if sc["counts"][c])
+    scores = ", ".join(f"{k} {v[0]}/3" for k, v in sc["signals"].items()) + "; " + \
+        ", ".join(f"{dict(PERSONA_BIG5)[k]} {v[0] if v[0] is not None else 'not rated'}/5" for k, v in sc["big5"].items())
+    try:
+        summ, _ = claude_json(PERSONA_SUMMARY_SYSTEM, {"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"], "additionalProperties": False},
+                              f"From {sc['n']} lines.\nScores: {scores}\nTagged lines (code, count, latest examples):\n{examples or 'none'}", key)
+    except PersonaError as e:                         # the scores stand without the sentence
+        print(f"Personality read: summary failed for {name}: {e}", flush=True)
+        summ = {}
+    summary = str(summ.get("summary", "")).strip()
+    if re.search(r"(?i)\b(he|him|his|himself|she|her|hers|herself)\b", summary):
+        summary = ""                                  # it guessed a gender: keep the scores, drop the sentence
+    summary = re.sub(r"\bP\b", lambda m: shown_name, summary)
+    built = persona_from_fields(summary, sc["big5"], sc["signals"], [])
+    if built.get("data"):
+        built["data"].update(method=READ_METHOD, counts=sc["counts"], rates=sc["rates"], n=sc["n"], confidence=sc["confidence"], agreement=agreement, coders=CODERS,
+                             garbled=len(garbled), short=n - len(eligible) - len(garbled), anonymous=True, agreementByCode={c: v for c, v in by_code.items() if v[1]},
+                             talkRatio=round(talk_ratio, 2) if talk_ratio is not None else None)
+        built["tagged"] = sc["lines"]
+    return built, model
+
+
+def claude_json(system: str, schema: dict, user: str, key: str) -> tuple[dict, str]:
+    """One structured answer from Claude. Returns (parsed JSON, model that wrote it)."""
     import anthropic
     client = anthropic.Anthropic(api_key=key, timeout=600, max_retries=3)
     try:
@@ -1788,9 +1821,9 @@ def claude_persona(name: str, excerpt: str, key: str) -> tuple[dict, str]:
         with client.beta.messages.stream(
                 model=CLAUDE_MODEL, max_tokens=16000,
                 betas=["server-side-fallback-2026-07-01"], fallbacks="default",   # if the model declines, the API reruns it on a fallback model
-                output_config={"effort": "high", "format": {"type": "json_schema", "schema": _persona_schema()}},
-                system=PERSONA_SYSTEM_CLAUDE,
-                messages=[{"role": "user", "content": f"Name: {name}\n\nExcerpts from {name}'s calls, oldest first:\n\n{excerpt}"}]) as stream:
+                output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema}},
+                system=system,
+                messages=[{"role": "user", "content": user}]) as stream:
             resp = stream.get_final_message()
     except anthropic.AuthenticationError:
         raise PersonaError("Anthropic refused the API key. Check it in Settings.")
@@ -1821,7 +1854,174 @@ def claude_persona(name: str, excerpt: str, key: str) -> tuple[dict, str]:
             continue
     if not isinstance(data, dict):
         raise PersonaError("Claude's answer wasn't in the expected form.")
-    return persona_from_json(data), getattr(resp, "model", CLAUDE_MODEL)
+    return data, getattr(resp, "model", CLAUDE_MODEL)
+
+
+# ---------------------------------------------------------------- codebook reads
+# Claude doesn't score people. It only tags each of the person's lines with
+# codes from a fixed codebook; fixed rules in code below turn the counts into
+# scores, so every read follows the same structure and can be checked.
+READ_METHOD = "codebook-4"
+CODERS = 2                # each piece is tagged this many times independently; only tags they all agree on count
+
+# code: (what it means, what it is NOT, [(trait, +1/-1), ...])
+CODEBOOK = {
+    "BRAG": ("Boasts about their own skill, kills, rank, gear or status, or fishes for praise.",
+             "Plain reports of what they are doing or got (\"I'm on the left\", \"got one\").", [("self-focus", 1)]),
+    "SELF_TURN": ("Takes a topic someone else raised and turns it to themselves, or cuts in with their own story.",
+                  "Answering a question about themselves.", [("self-focus", 1)]),
+    "DISMISS": ("Brushes off another person's idea, worry or feelings as unimportant, said in earnest.",
+                "Disagreeing with a reason; brushing off the game; teasing both sides enjoy (code BANTER).", [("self-focus", 1), ("A", -1)]),
+    "PUTDOWN": ("Insults, mocks or belittles someone in the call in a way that reads as meant: visibly contemptuous, or the target objects in the lines around it.",
+                "Teasing both sides enjoy (code BANTER); swearing at the game, enemies, NPCs or themselves.", [("antagonism", 1), ("A", -1)]),
+    "BLAME": ("Angrily blames a teammate for something going wrong, in earnest.", "Calm feedback; blaming the game; joking blame (code BANTER).", [("antagonism", 1), ("A", -1)]),
+    "BANTER": ("Playful teasing that is part of mutual joking.", "Put-downs that read as meant (code PUTDOWN).", []),
+    "FLATTER_GAIN": ("Compliments or sweet-talks someone to get something from them.", "Sincere praise (code ENCOURAGE).", [("manipulation", 1)]),
+    "GUILT": ("Guilt-trips or pressures someone emotionally to get their way.", "Asking plainly.", [("manipulation", 1)]),
+    "DECEIVE": ("Misleads someone in the group on purpose, or says they are doing so.", "Tricking enemies in the game; obvious jokes.", [("manipulation", 1)]),
+    "OUTBURST": ("A sudden burst of rage or yelling from frustration.", "Excited cheering; a single swear word.", [("impulsiveness", 1), ("S", -1)]),
+    "RASH": ("Acts or decides on the spot without thinking (\"fuck it, I'm going in\"), or blurts something out and walks it back.",
+             "Quick callouts.", [("impulsiveness", 1), ("C", -1)]),
+    "HELP": ("Offers or gives help: items, heals, revives, rides, covering someone.", "Callouts about enemies.", [("warmth", 1)]),
+    "ENCOURAGE": ("Praises, thanks, reassures or encourages someone else.", "Sarcastic praise.", [("warmth", 1)]),
+    "ACCOUNTABLE": ("Owns a mistake or apologises to someone.", "Joking apologies.", [("A", 1)]),
+    "INCLUDE": ("Checks on how someone is, or makes room for a quieter person.", "Asking where someone is for tactics.", [("warmth", 1), ("A", 1)]),
+    "CURIOUS": ("Asks out of interest how something works, suggests a new idea or tactic, or riffs imaginatively.",
+                "Routine questions (\"where are you?\").", [("O", 1)]),
+    "ROUTINE": ("Rejects trying something new or different (\"just do what we always do\").", "Disagreeing with a reason.", [("O", -1)]),
+    "PLAN": ("Organises: sets a plan, tracks objectives or resources, reminds people of tasks.", "Single callouts.", [("C", 1)]),
+    "FOLLOW_THROUGH": ("Does what they said they would, or reports finishing a task they took on.", "Things that just happen to them.", [("C", 1)]),
+    "CARELESS": ("Forgets, loses track, drops a task, or shrugs off doing it properly.", "Mistakes in play under pressure.", [("C", -1)]),
+    "INITIATE": ("Starts a new topic, story or joke for the group; energetic social chatter.", "Callouts and replies.", [("E", 1)]),
+    "WITHDRAWN": ("Opts out of the group talk: says they want to be left alone, to go quiet, or not to talk.", "Being busy or away; short answers to tactical questions.", [("E", -1)]),
+    "COOPERATE": ("Goes along with others' plans, concedes, compromises, or defers politely.", "Silent compliance (not in lines).", [("A", 1)]),
+    "ARGUE": ("Refuses, contradicts stubbornly, or argues heatedly, in earnest.", "A calm disagreement with a reason; mock arguing in fun (code BANTER).", [("A", -1)]),
+    "CALM": ("Stays calm or steadies others when things go wrong.", "Plain neutral talk.", [("S", 1)]),
+    "LAUGH_OFF": ("Laughs off or shrugs off a setback (dying, losing, a mistake) without getting upset.", "Laughing at someone else.", [("S", 1)]),
+    "GARBLED": ("The line is too garbled by the transcription to tell what was meant.", "Short lines that are clear.", []),
+    "UPSET": ("Sounds genuinely anxious, distressed or sulky about how things are going for them or the group, or keeps complaining after others have moved on (not an outburst).",
+              "Joking complaints; griping in passing about the game, gear, lag, enemies or the map; a one-line reaction to dying, losing or a bad moment; swearing at the game.", [("S", -1)]),
+}
+SIGNAL_KEYS = ["self-focus", "antagonism", "manipulation", "impulsiveness", "warmth"]
+# per-100-line rates for scores 1, 2, 3 (warmth is common in team games, so it needs more)
+SIGNAL_CUTS = {"self-focus": (0.5, 2, 5), "antagonism": (0.5, 2, 5), "manipulation": (0.3, 1, 3),
+               "impulsiveness": (0.5, 2, 5), "warmth": (1, 3, 6)}   # rates of tags both coders agreed on
+SIGNAL_MIN = {1: 2, 2: 3, 3: 5}                # lines needed for each score, whatever the rate
+BIG5_CUTS = (-6, -2, 2, 6)                     # net per 100 lines: below -6 is 1, ... at or above 6 is 5
+BIG5_MIN_EVIDENCE, BIG5_EXTREME_EVIDENCE = 3, 8
+
+
+def codebook_text() -> str:
+    out = []
+    for code, (yes, no, _) in CODEBOOK.items():
+        out.append(f"- {code}: {yes} Not: {no}")
+    return "\n".join(out)
+
+
+PERSONA_SYSTEM_CODEBOOK = """You code transcripts of voice calls among friends who mostly play games together, for a study of how each person comes across. You don't rate anyone; you tag lines, and fixed rules turn the tags into scores.
+
+You get excerpts from one person's calls, oldest first. Names are replaced so you judge only what is said: the person is P, and everyone else is a letter (A, B, C...). P's lines are numbered: ">> [12] text". Lines marked "  ·" are other people speaking just before or just after, for context only: never code them. Use them to read the numbered lines correctly: who is being answered, and whether something is a joke, banter or sarcasm.
+
+The codebook:
+{codebook}
+
+Rules:
+1. Tag a numbered line with a code only when the line clearly fits the definition, read with its context. When unsure, leave it untagged. Most lines get no code: callouts, small talk and filler stay untagged.
+2. A line can have more than one code if it clearly fits each.
+3. Swearing alone is not a code. Friends' trash-talk that both sides enjoy is BANTER only, never PUTDOWN, DISMISS, BLAME or ARGUE. Reacting to the game itself (dying, lag, a bad round) is not UPSET or OUTBURST unless it is aimed at people or goes on and on.
+4. Transcripts have errors: tag a line GARBLED when you can't tell what was meant, and give it no other code. Judge everyone by the same standard, however they speak or however well the transcript caught them.
+5. Every number you list must be one of the numbered lines.
+
+Reply with the codes only: for each code, the numbers of the lines that carry it (an empty list if none)."""
+
+PERSONA_SUMMARY_SYSTEM = """You write one plain sentence, at most 25 words, on how a person comes across in voice calls with friends who play games together. Base it only on the scores and tagged examples you are given; don't add traits they don't show, and don't guess at who they are (age, gender, background). The person is called P: start the sentence with "P". Refer to P only as P or "they", never he or she. This is an impression of their style, not a diagnosis."""
+
+
+CODE_CHUNK = 120          # numbered lines per tagging call: a long transcript gets the same care per line as a short one
+
+
+def _codebook_schema() -> dict:
+    codes = {c: {"type": "array", "items": {"type": "integer"}} for c in CODEBOOK}
+    return {"type": "object", "properties": {"codes": {"type": "object", "properties": codes, "required": list(codes), "additionalProperties": False}},
+            "required": ["codes"], "additionalProperties": False}
+
+
+def excerpt_chunks(text: str, size: int = CODE_CHUNK) -> list[tuple[str, int, int]]:
+    """Split a numbered excerpt into pieces of about size numbered lines, each with
+    its call header and the context lines that lead into it. Returns (text, first, last)."""
+    chunks, cur, header, first, last, tail, full = [], [], None, None, None, [], False
+    for line in text.splitlines():
+        m = re.match(r">> \[(\d+)\]", line)
+        if full and (m or line.startswith("---")):    # close the full piece; the context after its last line goes in both pieces
+            chunks.append(("\n".join(cur), first, last))
+            cur, full = ([] if line.startswith("---") else ([header] if header else []) + tail), False
+        if line.startswith("---"):
+            header, tail = line, []
+            cur.append(line)
+            continue
+        if not m:
+            cur.append(line)
+            tail.append(line)
+            continue
+        k = int(m.group(1))
+        if first is None or not any(re.match(r">> \[", x) for x in cur):
+            first = k
+        cur.append(line)
+        last, tail = k, []
+        if k - first + 1 >= size:
+            full = True
+    if first is not None and any(re.match(r">> \[", x) for x in cur):
+        chunks.append(("\n".join(cur), first, last))
+    return chunks
+
+
+SHRINK = 100   # rates are taken over (lines + SHRINK): thin evidence leans toward neutral instead of swinging to extremes
+
+
+def score_codes(codes: dict, n: int, talk_ratio: float | None = None, denom: int | None = None) -> dict:
+    """Fixed rules: tagged line numbers (1..n) -> counts, rates and scores, over denom
+    lines that count (default n). Returns {"signals": {key: (score|None, note)},
+    "big5": {...}, "counts", "rates", "n", "confidence"}. talk_ratio is only reported."""
+    d_ = denom or n
+    clean = {}
+    for c in CODEBOOK:
+        clean[c] = sorted({int(x) for x in (codes.get(c) or []) if isinstance(x, (int, float)) and 1 <= int(x) <= n})
+    banter = set(clean["BANTER"])
+    for c in ("PUTDOWN", "DISMISS", "BLAME", "ARGUE"):       # tagged as banter too: give the benefit of the doubt
+        clean[c] = [x for x in clean[c] if x not in banter]
+    counts = {c: len(v) for c, v in clean.items()}
+    per = lambda k: 100 * k / (d_ + SHRINK) if d_ else 0.0
+    # evidence per trait as sets of lines: a line with two codes for one trait counts once
+    pos_l, neg_l = {}, {}
+    for c, (_, _, effects) in CODEBOOK.items():
+        for trait, sign in effects:
+            (pos_l if sign > 0 else neg_l).setdefault(trait, set()).update(clean[c])
+    pos = {k: len(v) for k, v in pos_l.items()}
+    neg = {k: len(v) for k, v in neg_l.items()}
+    signals = {}
+    for k in SIGNAL_KEYS:
+        cnt = pos.get(k, 0)
+        rate = per(cnt)
+        score = sum(rate >= cut for cut in SIGNAL_CUTS[k])
+        while score and cnt < SIGNAL_MIN[score]:      # not enough lines for that score
+            score -= 1
+        signals[k] = (score, f"{cnt} of {d_} lines")
+    big5 = {}
+    for k in "OCEAS":
+        p, q = pos.get(k, 0), neg.get(k, 0)
+        ev = len(pos_l.get(k, set()) | neg_l.get(k, set()))
+        net = per(p - q)
+        if ev < BIG5_MIN_EVIDENCE:
+            score = None
+        else:
+            score = 1 + sum(net >= cut for cut in BIG5_CUTS)
+            if ev < BIG5_EXTREME_EVIDENCE:
+                score = min(4, max(2, score))         # 1 or 5 needs more evidence
+        # How much someone talks is shown, never scored: it measured talk volume more than Extraversion.
+        big5[k] = (score, f"+{p} / -{q} of {d_} lines" + (f", talks {talk_ratio:.1f}x an even share" if k == "E" and talk_ratio is not None else ""))
+    conf = "low" if d_ < 100 else "medium" if d_ < 300 else "high"
+    return {"signals": signals, "big5": big5, "counts": counts, "rates": {c: round(100 * v / d_, 2) if d_ else 0.0 for c, v in counts.items()},
+            "n": d_, "confidence": conf, "lines": clean}
 
 
 def check_claude_key(key: str) -> str | None:
@@ -1842,12 +2042,51 @@ def check_claude_key(key: str) -> str | None:
         return f"Anthropic error {e.status_code}."
 
 
-def person_excerpt(uid: str, max_words: int, context: bool) -> tuple[str, int, int]:
+def name_finder(hub=None):
+    """A regex for every known name (usernames, display names, nicknames, speaker
+    names), with who each belongs to: names in the lines can be swapped for labels."""
+    owner: dict[str, str] = {}
+    pdir = (hub.people_dir if hub else {}) or {}
+    for uid, p in pdir.items():
+        for nm in [p.get("username")] + list(p.get("usernames") or []) + list(p.get("names") or []) + list(p.get("nicks") or []):
+            if nm and len(nm.strip()) >= 3:
+                owner.setdefault(nm.strip().lower(), uid)
+    for d in all_days():
+        for r in day_data(d)[0]:
+            sp = (r.get("speaker") or "").strip()
+            if len(sp) >= 3 and r.get("user") and not re.fullmatch(r"user-\d{4}", sp):
+                owner.setdefault(sp.lower(), r["user"])
+    if not owner:
+        return None, owner
+    pat = re.compile(r"(?<![\w@])@?(" + "|".join(re.escape(n) for n in sorted(owner, key=len, reverse=True)) + r")(?!\w)", re.I)
+    return pat, owner
+
+
+def person_excerpt(uid: str, max_words: int, context: bool, info: dict | None = None, anonymous: bool = False) -> tuple[str, int, int]:
     """Their most recent lines (newest kept first when cutting to max_words), grouped by
     call, oldest first. With context, up to two lines others said just before each of
-    theirs. Returns (text, their lines used, words)."""
+    theirs, and up to two said just after (how people reacted). Returns (text, their
+    lines used, words); info["since"] gets the time of the oldest line used."""
     blocks, used, words = [], 0, 0
+    times: list = []                            # time of each of their lines, oldest first, to find where the cut lands
+    # Anonymous: the person is P, everyone else a letter, in the speaker labels and inside what was said
+    labels: dict = {}
+    pat, owner = name_finder(PERSONA_BOOK.hub if PERSONA_BOOK else None) if anonymous else (None, {})
+    def label(key: str) -> str:
+        if key == uid:
+            return "P"
+        if key not in labels:
+            k = len(labels)
+            labels[key] = chr(65 + k % 26) + (str(k // 26 + 1) if k >= 26 else "")
+            if labels[key] == "P":                 # P is taken
+                labels[key] = "P2"
+        return labels[key]
+    def scrub(text: str) -> str:
+        return pat.sub(lambda m: label(owner.get(m.group(1).lower(), m.group(1).lower())), text) if pat else text
+    def who(o) -> str:
+        return label(o.get("user") or (o.get("speaker") or "someone")) if anonymous else (o.get("speaker") or "someone")
     for d in sorted(all_days(), reverse=True):
+        stamps: dict = {}
         recs, calls = day_data(d)
         recs = [r for r in recs if r.get("text") and not r.get("bg")]
         recs.sort(key=lambda r: r["t"])
@@ -1855,28 +2094,56 @@ def person_excerpt(uid: str, max_words: int, context: bool) -> tuple[str, int, i
         if not idx:
             continue
         day_blocks, cur_call, cur = [], object(), []
+        same_ch = lambda a, b: not a.get("ch") or not b.get("ch") or a["ch"] == b["ch"]
+        # A run of lines they said back to back (under 1.5 s apart, nobody in between) is one turn,
+        # so people whose speech gets cut into many short lines don't count more often than others.
+        groups: list[list[int]] = []
         for i in idx:
             r = recs[i]
-            same_ch = lambda a, b: not a.get("ch") or not b.get("ch") or a["ch"] == b["ch"]
+            if groups:
+                g = groups[-1]; last = recs[g[-1]]
+                between = any(recs[j].get("user") != uid and same_ch(r, recs[j]) for j in range(g[-1] + 1, i))
+                w = sum(len(recs[j]["text"].split()) for j in g) + len(r["text"].split())
+                if not between and same_ch(r, last) and r["t"] - last.get("end", last["t"]) < 1500 and w <= 60 and r["t"] - recs[g[0]]["t"] <= 30000:
+                    g.append(i)
+                    continue
+            groups.append([i])
+        for g in groups:
+            i = g[0]
+            r = recs[i]
+            r_last = recs[g[-1]]
+            turn_text = " ".join(recs[j]["text"].strip() for j in g)
             call = next((c for c in calls if c["start"] <= r["t"] <= c["end"] and same_ch(r, c)), None)
             cid = call and call.get("id")
             if cid != cur_call:
                 if cur:
                     day_blocks.append(cur)
                 where = " · ".join(x for x in ((call or {}).get("chName"), (call or {}).get("guildName")) if x)
-                cur, cur_call = [f"--- call on {d}" + (f" in {where}" if where else "") + " ---"], cid
+                cur, cur_call = [f"--- call on {d}" + (f" in {where}" if where and not anonymous else "") + " ---"], cid
             if context:
                 before = [recs[j] for j in range(max(0, i - 40), i) if recs[j].get("user") != uid and same_ch(r, recs[j])
                           and r["t"] - recs[j].get("end", recs[j]["t"]) < 20000][-2:]
                 for o in before:
-                    if not any(o["text"] in line for line in cur[-3:]):
-                        cur.append(f"  · {o.get('speaker') or 'someone'}: {o['text'].strip()}")
-            cur.append(">> " + r["text"].strip())
+                    if not any(scrub(o["text"].strip()) in line for line in cur[-3:]):
+                        cur.append(f"  · {who(o)}: {scrub(o['text'].strip())}")
+            cur.append(">> " + scrub(turn_text))
+            stamps[len(cur) - 1 + sum(len(b) for b in day_blocks), d] = r["t"]
             used += 1
-            words += len(r["text"].split())
+            words += len(turn_text.split())
+            if context:
+                after = []
+                for j in range(g[-1] + 1, min(len(recs), g[-1] + 40)):
+                    o = recs[j]
+                    if o.get("user") == uid or o["t"] - r_last.get("end", r_last["t"]) > 15000 or len(after) == 2:
+                        break
+                    if same_ch(r_last, o):
+                        after.append(o)
+                for o in after:
+                    cur.append(f"  · {who(o)}: {scrub(o['text'].strip())}")
         if cur:
             day_blocks.append(cur)
         blocks = day_blocks + blocks            # this day goes before the later ones already gathered
+        times = [t for _, t in sorted(stamps.items())] + times
         if words >= max_words:
             break
     flat = [line for b in blocks for line in b]
@@ -1891,7 +2158,110 @@ def person_excerpt(uid: str, max_words: int, context: bool) -> tuple[str, int, i
     while keep and not keep[0].startswith(("---", ">>")):
         keep.pop(0)
     mine = [line for line in keep if line.startswith(">> ")]
+    if info is not None and mine:
+        info["since"] = times[len(times) - len(mine)] if len(times) >= len(mine) else 0
     return "\n".join(keep), len(mine), sum(len(line.split()) - 1 for line in mine)
+
+
+def study_path() -> Path:
+    return TRANSCRIPTS.parent / "study.json"
+
+
+def load_study() -> dict:
+    try:
+        return json.loads(study_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def study_data(hub, book) -> dict:
+    """For the Study view: everyone with a read, their scores per read, and any test scores entered."""
+    people = {p["id"]: p for p in people_summary(hub)}
+    out = []
+    items = []
+    if book:
+        with book.lock:
+            items = [(u, {"reads": list(v.get("reads", []))}) for u, v in book.data.items()]
+    for uid, v in items:
+        p = people.get(uid) or {}
+        reads = []
+        for r in v.get("reads", []):
+            d = r.get("data") or {}
+            reads.append({"at": r["at"], "lines": r.get("lines"), "used": r.get("used"), "model": r.get("model"),
+                          "method": r.get("method") or d.get("method") or "freeform", "confidence": d.get("confidence"), "agreement": d.get("agreement"),
+                          "n": d.get("n"), "garbled": d.get("garbled"), "short": d.get("short"),
+                          "big5": {x["key"]: x["score"] for x in d.get("big5", [])},
+                          "signals": {x["key"]: x["score"] for x in d.get("signals", [])}})
+        if reads:
+            out.append({"id": uid, "name": p.get("name") or reads and v["reads"][-1].get("name") or uid,
+                        "lines": p.get("lines", 0), "words": p.get("words", 0), "reads": reads})
+    out.sort(key=lambda x: -x["lines"])
+    pooled: dict = {}                              # per code, over everyone's latest current read: [tags both passes gave, tags either gave]
+    for uid, v in items:
+        cur = [r for r in v["reads"] if (r.get("method") or (r.get("data") or {}).get("method")) == READ_METHOD]
+        for c, (b, a) in ((cur[-1].get("data") or {}).get("agreementByCode") or {}).items() if cur else []:
+            pooled.setdefault(c, [0, 0]); pooled[c][0] += b; pooled[c][1] += a
+    return {"people": out, "tests": load_study().get("tests", {}), "method": READ_METHOD, "agreeByCode": pooled,
+            "codebook": {k: {"yes": y, "no": n, "effects": e} for k, (y, n, e) in CODEBOOK.items()},
+            "rules": {"chunk": CODE_CHUNK, "coders": CODERS, "first": PERSONA_FIRST, "every": PERSONA_EVERY}}
+
+
+def save_test(uid: str, params: dict) -> dict:
+    st = load_study()
+    tests = st.setdefault("tests", {})
+    if params.get("clear") == "1":
+        tests.pop(uid, None)
+    else:
+        t = {}
+        for k in "OCEAS":
+            try:
+                x = float(params.get(k, ""))
+            except ValueError:
+                return {"error": "Enter a score from 1 to 5 for each trait."}
+            if not 1 <= x <= 5:
+                return {"error": "Scores go from 1 to 5."}
+            t[k] = round(x, 2)
+        t["instrument"] = params.get("instrument", "")[:40]
+        t["at"] = int(time.time() * 1000)
+        tests[uid] = t
+    tmp = study_path().with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(st, indent=1), encoding="utf-8")
+    os.replace(tmp, study_path())
+    return {"ok": True, "tests": tests}
+
+
+def number_excerpt(text: str) -> tuple[str, int]:
+    """'>> text' -> '>> [1] text', counting up; returns (text, numbered lines)."""
+    n, out = 0, []
+    for line in text.splitlines():
+        if line.startswith(">> "):
+            n += 1
+            line = f">> [{n}] " + line[3:]
+        out.append(line)
+    return "\n".join(out), n
+
+
+def talk_ratio(uid: str, since: int = 0) -> float | None:
+    """Their words in the calls they spoke in (from since on), against an even share
+    (all words / speakers). Calls where they said nothing can't count: there is no record of who was there."""
+    mine = even = 0.0
+    since_day = dt.datetime.fromtimestamp(since / 1000).strftime("%Y-%m-%d") if since else ""
+    for d in all_days():
+        if d < since_day:
+            continue
+        recs, calls = day_data(d)
+        recs = [r for r in recs if r.get("text") and not r.get("bg")]
+        for c in calls:
+            if c["end"] < since:
+                continue
+            inn = [r for r in recs if c["start"] <= r["t"] <= c["end"] and (not r.get("ch") or not c.get("ch") or r["ch"] == c["ch"])]
+            who = {r.get("user") or r.get("speaker") for r in inn}
+            w = lambda r: len(r["text"].split())
+            k = sum(w(r) for r in inn if r.get("user") == uid)
+            if k and len(who) >= 2:
+                mine += k
+                even += sum(w(r) for r in inn) / len(who)
+    return mine / even if even else None
 
 
 PERSONA_BOOK: "PersonaBook | None" = None
@@ -2031,9 +2401,11 @@ class PersonaBook:
         t0 = time.time()
         if eng == "claude":
             self.status[uid]["model"] = CLAUDE_NAME
-            excerpt, used, words = person_excerpt(uid, 20000, context=True)
+            span: dict = {}
+            excerpt, used, words = person_excerpt(uid, 20000, context=True, info=span, anonymous=True)
+            excerpt, used = number_excerpt(excerpt)
             print(f"Personality read: {name} with {CLAUDE_NAME} ({used} lines)", flush=True)
-            built, model = claude_persona(name, excerpt, claude_key())
+            built, model = claude_persona(name, excerpt, claude_key(), used, talk_ratio(uid, span.get("since", 0)))
             model_name = CLAUDE_NAME if model.startswith(CLAUDE_MODEL) else model
         else:
             self.status[uid]["model"] = LLM_NAME
@@ -2044,7 +2416,10 @@ class PersonaBook:
         if not built.get("data"):
             raise PersonaError("The model's answer couldn't be read.")
         rec = {"at": int(time.time() * 1000), "lines": p["lines"], "used": used, "words": words, "model": model_name,
-               "seconds": round(time.time() - t0, 1), "name": name, "data": built["data"], "text": built["text"]}
+               "seconds": round(time.time() - t0, 1), "name": name, "data": built["data"], "text": built["text"],
+               "method": built["data"].get("method", "freeform")}
+        if built.get("tagged"):
+            rec["tagged"] = built["tagged"]          # the line numbers behind each code (kept for checking, not shown)
         with self.lock:
             self.data.setdefault(uid, {"reads": []})["reads"].append(rec)
             self._save()
@@ -3376,6 +3751,17 @@ async def main():
                 res = persona_book.ask(uid, force=params.get("fresh") == "1")
                 return respond(res, status=400 if "reads" not in res else 200)   # a view carries "error": None
             return respond(persona_book.view(uid))
+        if path == "/api/study":
+            return respond(study_data(hub, persona_book))
+        if path == "/api/study/test":
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            from urllib.parse import unquote_plus
+            uid = params.get("user", "")
+            if not re.fullmatch(r"\d{15,22}", uid):
+                return respond({"error": "bad request"}, status=400)
+            res = save_test(uid, {k: unquote_plus(v) for k, v in params.items()})
+            return respond(res, status=400 if "error" in res else 200)
         if path == "/api/persona/key":
             # the key comes in a header, never the URL, so it can't end up in a log or history
             if request.headers.get("X-CT") != "1":

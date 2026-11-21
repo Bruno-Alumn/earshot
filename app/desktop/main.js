@@ -912,10 +912,10 @@ function buildMenu() {
   const js = (code) => () => dash && !dash.isDestroyed() && dash.webContents.executeJavaScript(code).catch(() => {});
   t.push({ label: 'View', submenu: [
     { label: 'Reload Dashboard', accelerator: 'CmdOrCtrl+R', click: () => (server ? showDashboard() : splash('The server is stopped. Nothing is being transcribed.', { offerStart: true })) },
-    { label: 'Show/Hide Calls List', accelerator: 'CmdOrCtrl+\\', click: js("document.getElementById('toggle-side')?.click()") },
-    { label: 'Compact View (everything on one screen)', accelerator: 'CmdOrCtrl+Shift+K', click: js("document.getElementById('toggle-compact')?.click()") },
-    { label: 'Search All Calls…', accelerator: 'CmdOrCtrl+Shift+F', click: js("(()=>{const s=document.getElementById('shell');s?.classList.remove('collapsed');document.getElementById('hq')?.focus()})()") },
-    { label: 'Find in Transcript…', accelerator: 'CmdOrCtrl+F', click: js("document.getElementById('q')?.focus()") },
+    { label: 'Show/Hide Calls List', accelerator: 'CmdOrCtrl+\\', click: js("window.showView?.('calls'); document.getElementById('toggle-side')?.click()") },
+    { label: 'Compact View (everything on one screen)', accelerator: 'CmdOrCtrl+Shift+K', click: js("window.showView?.('calls'); document.getElementById('toggle-compact')?.click()") },
+    { label: 'Search All Calls…', accelerator: 'CmdOrCtrl+Shift+F', click: js("(()=>{window.showView?.('calls');const s=document.getElementById('shell');s?.classList.remove('collapsed');requestAnimationFrame(()=>document.getElementById('hq')?.focus())})()") },
+    { label: 'Find in Transcript…', accelerator: 'CmdOrCtrl+F', click: js("(()=>{window.showView?.('calls');requestAnimationFrame(()=>document.getElementById('q')?.focus())})()") },
     { type: 'separator' },
     { label: 'Open Transcripts Folder', accelerator: 'CmdOrCtrl+O', click: () => shell.openPath(path.join(ROOT, 'transcripts')) },
     { label: 'Open Dashboard in Browser', accelerator: 'CmdOrCtrl+B', click: () => shell.openExternal(BASE) },

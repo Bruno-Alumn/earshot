@@ -2,7 +2,7 @@
 PERSONA_EVERY more, every read kept in personas.json; Claude when there is a key,
 else the local model. Claude itself is mocked here (no network, no key).
   cd server && uv run python ../test/persona_store_test.py"""
-import json, sys, tempfile, time
+import json, re, sys, tempfile, time
 from pathlib import Path
 sys.argv = sys.argv[:1]; sys.path.insert(0, ".")
 import server as S
@@ -55,13 +55,48 @@ d = built["data"]
 check(d["summary"].startswith("John comes across"), "a second name in brackets is stripped from the summary")
 check(len(d["signals"]) == 5 and len(d["big5"]) == 5 and d["signals"][-1]["key"] == "warmth", "five signals (warmth last) and Big Five")
 check(d["traits"] == ["warm", "outgoing", "easygoing"], f"traits from the scores, at most three ({d['traits']})")
-sch = S._persona_schema()
-check(set(sch["required"]) == set(sch["properties"]) and sch["additionalProperties"] is False, "schema: every field required, nothing extra")
+sch = S._codebook_schema()
+cs = sch["properties"]["codes"]
+check(set(cs["required"]) == set(S.CODEBOOK) and cs["additionalProperties"] is False and sch["additionalProperties"] is False, "codebook schema: every code required, nothing extra")
+
+# fixed scoring rules
+sc = S.score_codes({"PUTDOWN": [1, 2, 3, 4, 5, 6, 999, -1, 2], "BANTER": [6], "HELP": list(range(1, 13)), "PLAN": [1, 2], "CARELESS": [3]}, 100)
+check(sc["counts"]["PUTDOWN"] == 5, "line numbers outside the excerpt and repeats are dropped; banter wins over put-down")
+check(sc["signals"]["antagonism"][0] == 2 and sc["signals"]["warmth"][0] == 3, f"rates map to fixed cut-offs, over lines + {S.SHRINK} ({sc['signals']['antagonism'][0]}, {sc['signals']['warmth'][0]})")
+big_sc = S.score_codes({"PUTDOWN": list(range(1, 61))}, 1000)
+check(big_sc["signals"]["antagonism"][0] == 3, "with lots of lines the lean toward neutral barely matters")
+check(S.score_codes({"PUTDOWN": [9]}, 10, denom=6)["counts"]["PUTDOWN"] == 1, "a tag on a late line still counts when fewer lines count toward the rate (bug fix)")
+check(sc["big5"]["C"][0] == 3 and sc["big5"]["O"][0] is None, "Big Five: net per 100 lines; under 3 lines of evidence is not rated")
+sc = S.score_codes({"PUTDOWN": [1, 2]}, 20)
+check(sc["signals"]["antagonism"][0] == 1, "a high rate from 2 lines still scores only 1 (score 2 needs 3 lines, 3 needs 5)")
+sc = S.score_codes({"COOPERATE": [1, 2, 3, 4, 5]}, 50)
+check(sc["big5"]["A"][0] == 4, "a 5 needs at least 8 lines of evidence")
+check(S.score_codes({"INITIATE": [1, 2, 3]}, 300, talk_ratio=2.0)["big5"]["E"][0] == S.score_codes({"INITIATE": [1, 2, 3]}, 300, talk_ratio=0.3)["big5"]["E"][0],
+      "how much someone talks no longer changes Extraversion (it's shown, not scored)")
+check(S.score_codes({}, 200, talk_ratio=3.0)["big5"]["E"][0] is None, "talk share alone doesn't rate Extraversion (no tagged evidence)")
+check(S.score_codes({"INITIATE": [1, 2, 3]}, 30, talk_ratio=3.0)["big5"]["E"][0] == 4, "the talk step can't push past 4 on under 8 lines")
+check(S.score_codes({"WITHDRAWN": [1, 2, 3, 4, 5, 6]}, 100)["big5"]["E"][0] == 2, "Extraversion can go below average (WITHDRAWN)")
+sc = S.score_codes({"OUTBURST": [1, 2], "RASH": [1, 2], "UPSET": [1, 2]}, 100)
+check(sc["signals"]["impulsiveness"][1].startswith("2 of") and sc["big5"]["S"][0] is None, "a line with two codes for one trait counts once (evidence is lines, not tags)")
+sc = S.score_codes({"BANTER": [1, 2, 3, 4], "DISMISS": [1, 2], "BLAME": [3], "ARGUE": [4]}, 100)
+check(sc["counts"]["DISMISS"] == 0 and sc["counts"]["BLAME"] == 0 and sc["counts"]["ARGUE"] == 0, "banter cancels dismiss, blame and argue on the same line too")
+check(S.score_codes({"HELP": [1, 2, 3, 4]}, 100)["big5"]["A"][0] is None, "routine help counts toward warmth only, not Agreeableness")
+check(S.score_codes({}, 50)["confidence"] == "low" and S.score_codes({}, 500)["confidence"] == "high", "confidence from how many lines were read")
+nt, nn = S.number_excerpt("--- call ---\n  · Ann: hi\n>> one\n>> two")
+check(nn == 2 and ">> [2] two" in nt, "lines numbered in order")
+big = "--- call on x ---\n" + "\n".join(f"  · Ann: q{i}\n>> [{i}] a{i} said this" for i in range(1, 301))
+ch = S.excerpt_chunks(big)
+check([(a, b) for _, a, b in ch] == [(1, 120), (121, 240), (241, 300)], f"tagged in pieces of 120 lines ({[(a, b) for _, a, b in ch]})")
+check(all(t.startswith("--- call on x") for t, _, _ in ch) and "  · Ann: q121" in ch[1][0], "each piece keeps its call header and the context before its first line")
+check(ch[0][0].rstrip().endswith("  · Ann: q121"), "...and the context right after a piece's last line stays with that piece too")
+two = "--- call on a ---\n>> [1] x\n  · Bo: after\n--- call on b ---\n  · Cy: before\n>> [2] y"
+ch2 = S.excerpt_chunks(two, size=1)
+check(len(ch2) == 2 and "Bo: after" in ch2[0][0] and "Bo: after" not in ch2[1][0] and ch2[1][0].startswith("--- call on b"), "a new call starts a clean piece")
 
 # the book
 calls = []
 S.claude_persona_real = S.claude_persona
-S.claude_persona = lambda name, excerpt, key: (calls.append((name, excerpt.count(">> "))) or (built, "claude-sonnet-5-5"))
+S.claude_persona = lambda name, excerpt, key, *a: (calls.append((name, excerpt.count(">> "))) or (built, "claude-sonnet-5-5"))
 class Reader:
     def read_lines(self, name, said): calls.append(("local", len(said))); return built
 book = S.PersonaBook(hub, Reader())
@@ -162,11 +197,41 @@ real_cls, anthropic.Anthropic = anthropic.Anthropic, FakeClient
 import importlib
 cp = S.__dict__["claude_persona_real"] if "claude_persona_real" in S.__dict__ else None
 
-got, model = S.claude_persona_real("John", ">> hi", "k")
-check(got["data"]["summary"].startswith("John comes across") and model == "claude-opus-4-8", "fallback answer parsed (not the declined partial)")
+got, model = S.claude_json("sys", {}, "user", "k")
+check(got["summary"].startswith("John (Gator)") and model == "claude-opus-4-8", "fallback answer parsed (not the declined partial)")
 Resp.content = [Blk("text", '{"summary": "John comes'), Blk("fallback"), Blk("text", json.dumps(sample)[len('{"summary": "John comes'):])]
-got, _ = S.claude_persona_real("John", ">> hi", "k")
-check(got["data"]["big5"], "fallback that continues the partial is joined and parsed")
+got, _ = S.claude_json("sys", {}, "user", "k")
+check(got.get("openness"), "fallback that continues the partial is joined and parsed")
+
+# a whole codebook read through the mocked client: tags per piece, then a summary
+seen = []
+def fake_json(system, schema, user, key):
+    seen.append(user)
+    if "summary" in schema.get("properties", {}):
+        return {"summary": "P comes across as a helpful planner."}, "claude-sonnet-5-5"
+    a, b = map(int, re.search(r"lines (\d+) to (\d+)", user).groups())
+    odd = sum(1 for u in seen if "Part of" in u) % 2      # every other coder also tags a PLAN line the other doesn't
+    return {"codes": {c: ([x for x in range(a, b + 1) if x % 10 == 0] if c == "HELP" else [b + 5] if c == "PUTDOWN" else [a] if c == "PLAN" and odd else []) for c in S.CODEBOOK}}, "claude-sonnet-5-5"
+S.claude_json, real_json = fake_json, S.claude_json
+built2, _ = S.claude_persona_real("John", big, "k", 300, 1.0)
+d2 = built2["data"]
+check(len(seen) == 3 * S.CODERS + 1 and "Tagged lines" in seen[-1], f"each of 3 pieces tagged {S.CODERS} times, then 1 summary call ({len(seen)})")
+check(d2["counts"]["PLAN"] == 0 and d2["agreement"] == round(30 / 33, 2), f"only tags both coders gave count; agreement recorded ({d2['agreement']})")
+check(d2["counts"]["HELP"] == 30 and d2["counts"]["PUTDOWN"] == 0, "codes merged across pieces; numbers outside a piece are dropped")
+check(d2["method"] == S.READ_METHOD and d2["n"] == 300 and d2["summary"].startswith("John comes across"), "read records its method, line count and summary (P turned back into the name)")
+check(not any("John" in u for u in seen), "the coders and the summary never see the person's name")
+# lines that can't show anything don't dilute the rates
+short = "--- call ---\n" + "\n".join(f">> [{i}] {'yeah' if i % 2 else 'that was a good push'}" for i in range(1, 101))
+seen.clear()
+def fake2(system, schema, user, key):
+    seen.append(user)
+    if "summary" in schema.get("properties", {}):
+        return {"summary": "P is fine."}, "m"
+    return {"codes": {c: ([2, 4, 6] if c == "HELP" else [1, 3] if c == "ENCOURAGE" else [8] if c == "GARBLED" else []) for c in S.CODEBOOK}}, "m"
+S.claude_json = fake2
+d3 = S.claude_persona_real("John", short, "k", 100)[0]["data"]
+check(d3["n"] == 51 and d3["short"] == 48 and d3["garbled"] == 1, f"one-word lines and garbled lines leave the count; tagged short lines stay ({d3['n']}, {d3['short']}, {d3['garbled']})")
+S.claude_json = real_json
 anthropic.Anthropic = real_cls
 
 # deleting lines drops reads that may have used them
@@ -184,6 +249,40 @@ with (S.TRANSCRIPTS / f"{d2}.jsonl").open("w") as f:
 S._day_cache.clear()
 ex = [x for x in S.person_excerpt(A, 10**6, context=True)[0].split("--- call on " + d2)[1].split("\n---")[0].splitlines()]
 check("Voice 2" in ex[0] and "  · Ann: same channel talk" in ex and not any("Gator" in x for x in ex), f"call header and context from the same channel ({ex[:3]})")
+
+# a gendered summary is dropped (the scores stay)
+def fake3(system, schema, user, key):
+    if "summary" in schema.get("properties", {}):
+        return {"summary": "P is a loud player and he jokes a lot."}, "m"
+    return {"codes": {c: [] for c in S.CODEBOOK}}, "m"
+S.claude_json = fake3
+check(S.claude_persona_real("John", short, "k", 100)[0]["data"]["summary"] == "", "a summary that guesses he/she is dropped")
+S.claude_json = real_json
+
+# lines said back to back become one turn
+d5 = "2026-01-07"; base5 = int(time.mktime(time.strptime(d5, "%Y-%m-%d"))) * 1000 + 3600_000
+with (S.TRANSCRIPTS / f"{d5}.jsonl").open("w") as f:
+    rows5 = [(0, A, "John", "so"), (900, A, "John", "basically we"), (1800, A, "John", "should push left"), (3000, B, "Gator", "ok"), (3500, A, "John", "cool"), (9000, A, "John", "later thought here")]
+    for k, (dt_, uid, who, text) in enumerate(rows5):
+        f.write(json.dumps({"id": f"z{k}", "t": base5 + dt_, "end": base5 + dt_ + 500, "user": uid, "speaker": who, "text": text, "ch": "v", "chName": "C", "guildName": "G"}) + "\n")
+S._day_cache.clear()
+part5 = S.person_excerpt(A, 10**6, context=True)[0].split("--- call on " + d5)[1].split("\n---")[0]
+mine5 = [x for x in part5.splitlines() if x.startswith(">> ")]
+check(mine5 == [">> so basically we should push left", ">> cool", ">> later thought here"], f"back-to-back lines join into one turn; someone speaking between or a pause splits them ({mine5})")
+
+# names are hidden from the coders: the person is P, others letters, in labels and in the text
+class Hub2: people_dir = {A: {"username": "yangsauce", "names": ["John"], "nicks": []}, B: {"username": "gatorvg", "names": ["Gator"], "nicks": []}}
+S.PERSONA_BOOK = type("PB", (), {"hub": Hub2()})()
+d4 = "2026-01-06"; base4 = int(time.mktime(time.strptime(d4, "%Y-%m-%d"))) * 1000 + 3600_000
+with (S.TRANSCRIPTS / f"{d4}.jsonl").open("w") as f:
+    for k, (dt_, uid, who, text) in enumerate([(0, B, "Gator", "John you there"), (500, A, "John", "yeah Gator I got you, @gatorvg"), (900, B, "Gator", "thanks john")]):
+        f.write(json.dumps({"id": f"y{k}", "t": base4 + dt_, "end": base4 + dt_ + 300, "user": uid, "speaker": who, "text": text, "ch": "v", "chName": "Secret Channel", "guildName": "Secret Server"}) + "\n")
+S._day_cache.clear()
+an = S.person_excerpt(A, 10**6, context=True, anonymous=True)[0]
+part = an.split("--- call on " + d4)[1].split("\n---")[0]
+check("John" not in part and "Gator" not in part and "gatorvg" not in part and "Secret" not in part, f"no names, channel or server in the anonymous excerpt ({part!r})")
+check("  · A: P you there" in part and ">> yeah A I got you, A" in part and "  · A: thanks P" in part, "the person is P and the other speaker a letter, in labels and in the text")
+S.PERSONA_BOOK = None
 
 # the key never goes into settings.json
 S.save_secret("anthropicKey", "sk-ant-xyz")
