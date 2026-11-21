@@ -68,65 +68,74 @@ check(v.score(walk([" gre", "n", "ade"]), final=True) == 0, "no bonus inside ano
 check(v.score(walk([" hot", " dog"]), final=True) == 0, "a started word that isn't finished gives its bonus back")
 check(v.score(walk([" E", "U", "rope"]), final=True) == 0, "EU then more letters (Europe) gets nothing")
 
-# 4. Granite 470M: beam search on made-up frames, with its real tokenizer
-from transformers import AutoTokenizer
-tk = AutoTokenizer.from_pretrained("ibm-granite/granite-speech-5.0-470m-turboctc")
-blank = tk.pad_token_id
-V = max(len(tk), blank + 1)
-def frames(rows):
-    """rows: one dict per frame {token piece: log-prob} (None = blank); everything else ~impossible."""
-    lp = np.full((len(rows), V), -30.0, np.float32)
-    for f, row in enumerate(rows):
-        for piece, l in row.items():
-            lp[f, blank if piece is None else tk.convert_tokens_to_ids(piece)] = l
-    return lp
-B = None
-def decode(ids):
-    return "".join(p[0] for p in S.ctc_pieces(ids, 16000 * 2, lambda t: tk.decode(t, skip_special_tokens=True, group_tokens=False), blank)).strip()
-texts, starts, cont = v.table(tk, V)
-lp = frames([{B: -0.1}, {"▁an": -0.4, "▁a": -1.2}, {B: -0.1}, {"▁aid": -0.4, "▁n": -1.2},
-             {B: -0.4, "ade": -1.2}, {B: -0.1}, {"▁over": -0.1}, {B: -0.1}])
-greedy = decode(lp.argmax(1))
-boosted = decode(S.ctc_boosted(lp, blank, v, texts, starts, cont))
-check(greedy == "an aid over" and boosted.endswith("nade over"), f"470M: greedy {greedy!r}, boosted {boosted!r}")
-plain = frames([{B: -0.1}, {"▁the": -0.2, "▁a": -1.8}, {B: -0.1}, {"▁ping": -0.3, "▁p": -1.5},
-                {B: -0.2, "ing": -2.0}, {"▁is": -0.2}, {B: -0.1}])
-check(decode(S.ctc_boosted(plain, blank, v, texts, starts, cont)) == decode(plain.argmax(1)), "470M: a line with no listed word comes out as the greedy decode")
-far = frames([{B: -0.1}, {"▁an": -0.05, "▁a": -9.0}, {B: -0.1}, {"▁aid": -0.05, "▁n": -9.0},
-              {B: -0.05, "ade": -9.0}, {B: -0.1}])
-check(decode(S.ctc_boosted(far, blank, v, texts, starts, cont)) == "an aid", "470M: a listed word the audio doesn't support isn't forced in")
-ids = S.ctc_boosted(lp, blank, v, texts, starts, cont)
-check(len(ids) == lp.shape[0] and all(0 <= i < lp.shape[1] for i in ids), "470M: one token id per frame, for word timing")
-settings["vocabulary"] = "hothot"
-vg = S.vocab_now(); tg = vg.table(tk, V)
-# the held path ("hot" over two frames) is likelier at frame 1, but the bonus makes "hot hot" win:
-# its two tokens must keep a blank between them, or the timing pass would read them as one
-rep_ = frames([{"\u2581hot": -0.05}, {"\u2581hot": -0.6, B: -0.8}, {"\u2581hot": -0.05}, {B: -0.05}])
-got = decode(S.ctc_boosted(rep_, blank, vg, *tg))
-check(got == "hot hot", f"470M: a token said twice stays twice: {got!r}")
-i_no = tk.convert_tokens_to_ids("\u2581no")
-three = np.full(7, blank); three[[1, 3, 5]] = i_no
-check(decode(three) == "no no no", "torch 470M decode keeps 'no no no' (its tokenizer merges repeats by default)")
-settings["vocabulary"] = WORDS
-held = frames([{B: -0.1}, {"▁hot": -0.2}, {"▁hot": -0.2}, {"▁hot": -0.2}, {B: -0.1}, {"▁zone": -0.2}, {B: -0.1}])
-pieces = S.ctc_pieces(S.ctc_boosted(held, blank, v, texts, starts, cont), 16000 * 7 // 10, lambda t: tk.decode(t, skip_special_tokens=True, group_tokens=False), blank)
-check([p[0].strip() for p in pieces] == ["hot", "zone"] and pieces[0][2] > pieces[0][1] + 0.15, f"470M: a token held over frames keeps its length {pieces}")
+# 4-5 need the models' tokenizers (transformers): the Windows CI machine runs the
+# ONNX engine without it, so these checks run where it is installed (Mac, NVIDIA PCs)
+try:
+    import transformers  # noqa: F401
+    HAVE_TF = True
+except ImportError:
+    HAVE_TF = False
+    print("  skip 470M and 2B tokenizer checks: transformers isn't installed here")
+if HAVE_TF:
+    # 4. Granite 470M: beam search on made-up frames, with its real tokenizer
+    from transformers import AutoTokenizer
+    tk = AutoTokenizer.from_pretrained("ibm-granite/granite-speech-5.0-470m-turboctc")
+    blank = tk.pad_token_id
+    V = max(len(tk), blank + 1)
+    def frames(rows):
+        """rows: one dict per frame {token piece: log-prob} (None = blank); everything else ~impossible."""
+        lp = np.full((len(rows), V), -30.0, np.float32)
+        for f, row in enumerate(rows):
+            for piece, l in row.items():
+                lp[f, blank if piece is None else tk.convert_tokens_to_ids(piece)] = l
+        return lp
+    B = None
+    def decode(ids):
+        return "".join(p[0] for p in S.ctc_pieces(ids, 16000 * 2, lambda t: tk.decode(t, skip_special_tokens=True, group_tokens=False), blank)).strip()
+    texts, starts, cont = v.table(tk, V)
+    lp = frames([{B: -0.1}, {"▁an": -0.4, "▁a": -1.2}, {B: -0.1}, {"▁aid": -0.4, "▁n": -1.2},
+                 {B: -0.4, "ade": -1.2}, {B: -0.1}, {"▁over": -0.1}, {B: -0.1}])
+    greedy = decode(lp.argmax(1))
+    boosted = decode(S.ctc_boosted(lp, blank, v, texts, starts, cont))
+    check(greedy == "an aid over" and boosted.endswith("nade over"), f"470M: greedy {greedy!r}, boosted {boosted!r}")
+    plain = frames([{B: -0.1}, {"▁the": -0.2, "▁a": -1.8}, {B: -0.1}, {"▁ping": -0.3, "▁p": -1.5},
+                    {B: -0.2, "ing": -2.0}, {"▁is": -0.2}, {B: -0.1}])
+    check(decode(S.ctc_boosted(plain, blank, v, texts, starts, cont)) == decode(plain.argmax(1)), "470M: a line with no listed word comes out as the greedy decode")
+    far = frames([{B: -0.1}, {"▁an": -0.05, "▁a": -9.0}, {B: -0.1}, {"▁aid": -0.05, "▁n": -9.0},
+                  {B: -0.05, "ade": -9.0}, {B: -0.1}])
+    check(decode(S.ctc_boosted(far, blank, v, texts, starts, cont)) == "an aid", "470M: a listed word the audio doesn't support isn't forced in")
+    ids = S.ctc_boosted(lp, blank, v, texts, starts, cont)
+    check(len(ids) == lp.shape[0] and all(0 <= i < lp.shape[1] for i in ids), "470M: one token id per frame, for word timing")
+    settings["vocabulary"] = "hothot"
+    vg = S.vocab_now(); tg = vg.table(tk, V)
+    # the held path ("hot" over two frames) is likelier at frame 1, but the bonus makes "hot hot" win:
+    # its two tokens must keep a blank between them, or the timing pass would read them as one
+    rep_ = frames([{"\u2581hot": -0.05}, {"\u2581hot": -0.6, B: -0.8}, {"\u2581hot": -0.05}, {B: -0.05}])
+    got = decode(S.ctc_boosted(rep_, blank, vg, *tg))
+    check(got == "hot hot", f"470M: a token said twice stays twice: {got!r}")
+    i_no = tk.convert_tokens_to_ids("\u2581no")
+    three = np.full(7, blank); three[[1, 3, 5]] = i_no
+    check(decode(three) == "no no no", "torch 470M decode keeps 'no no no' (its tokenizer merges repeats by default)")
+    settings["vocabulary"] = WORDS
+    held = frames([{B: -0.1}, {"▁hot": -0.2}, {"▁hot": -0.2}, {"▁hot": -0.2}, {B: -0.1}, {"▁zone": -0.2}, {B: -0.1}])
+    pieces = S.ctc_pieces(S.ctc_boosted(held, blank, v, texts, starts, cont), 16000 * 7 // 10, lambda t: tk.decode(t, skip_special_tokens=True, group_tokens=False), blank)
+    check([p[0].strip() for p in pieces] == ["hot", "zone"] and pieces[0][2] > pieces[0][1] + 0.15, f"470M: a token held over frames keeps its length {pieces}")
 
-# 5. Granite 2B: the push, with its real tokenizer, and the prompt
-tk2 = AutoTokenizer.from_pretrained("ibm-granite/granite-speech-5.0-2b")
-vb = S.VocabBias(tk2)
-size = len(tk2)
-enc = lambda s: tk2.encode(s, add_special_tokens=False)
-b = vb.bias(enc(" The hot"), size)
-zone = enc(" zone")[0]
-check(b is not None and b[zone] > 0, "2B: after ' hot' the token ' zone' gets a push")
-check(vb.bias(enc(" The E"), size) is None, "2B: no push from a single letter ('E' -> 'EU')")
-check(vb.bias(enc(" The weather is"), size) is None, "2B: no push in an ordinary sentence")
-settings["boost"] = "off"
-check(vb.bias(enc(" The hot"), size) is None, "2B: boost off means no push")
-settings["boost"] = "normal"
-b = vb.bias(enc(" Throw a n"), size)
-check(b is not None and b[enc("ade")[0]] > 0, "2B: after ' n' the rest of 'nade' gets a push (a 4-letter word)")
+    # 5. Granite 2B: the push, with its real tokenizer, and the prompt
+    tk2 = AutoTokenizer.from_pretrained("ibm-granite/granite-speech-5.0-2b")
+    vb = S.VocabBias(tk2)
+    size = len(tk2)
+    enc = lambda s: tk2.encode(s, add_special_tokens=False)
+    b = vb.bias(enc(" The hot"), size)
+    zone = enc(" zone")[0]
+    check(b is not None and b[zone] > 0, "2B: after ' hot' the token ' zone' gets a push")
+    check(vb.bias(enc(" The E"), size) is None, "2B: no push from a single letter ('E' -> 'EU')")
+    check(vb.bias(enc(" The weather is"), size) is None, "2B: no push in an ordinary sentence")
+    settings["boost"] = "off"
+    check(vb.bias(enc(" The hot"), size) is None, "2B: boost off means no push")
+    settings["boost"] = "normal"
+    b = vb.bias(enc(" Throw a n"), size)
+    check(b is not None and b[enc("ade")[0]] > 0, "2B: after ' n' the rest of 'nade' gets a push (a 4-letter word)")
 
 # 6. real speech (Mac): accents from `say`, both models
 if eng:
