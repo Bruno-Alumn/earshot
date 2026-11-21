@@ -46,7 +46,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 - Past calls grouped by server and channel, with search across all of them.
 - Compact mode puts the transcript and every panel on one screen, no scrolling.
 - Arrange it your way: drag panels between columns, size or hide them, and add new ones from plugins.
-- Personality reads: a small local model's read of how anyone in the call comes across — Big Five scores and interpersonal signals (including a narcissistic, self-focused style), each ranked with evidence from what they said. An impression of their style, not a diagnosis.
+- Personality reads: how each person comes across, as Big Five scores and interpersonal signals (including a narcissistic, self-focused style). The first read comes once they have said 40 lines and a new one after every 400 more, across all their calls, and every read is kept (personas.json). Claude Opus 5.5 writes them if you save an Anthropic API key in Settings; their lines, and what others said just before, are then sent to Anthropic. Without a key, the small local model writes them and nothing leaves your computer. An impression of their style, not a diagnosis.
 
 **Several accounts, several calls**
 
@@ -231,7 +231,7 @@ on the maintainer's machines.
 
 On a PC without an NVIDIA graphics card Granite can't keep up, so Earshot uses
 Parakeet TDT 0.6B v3 on the processor instead (7.4% words wrong, about 30×
-real time). Personality reads use Liquid AI LFM3 1.7B and need Apple Silicon
+real time). Personality reads use Claude Opus 5.5 with an API key, or else Liquid AI LFM3 1.7B, which needs Apple Silicon
 or an NVIDIA GPU.
 </details>
 

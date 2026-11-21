@@ -432,7 +432,7 @@ _day_cache: dict[str, tuple[float, list, list]] = {}
 def day_data(day: str) -> tuple[list[dict], list[dict]]:
     """(lines, calls) for a day, cached until its files change."""
     files = [TRANSCRIPTS / f"{day}.jsonl", TRANSCRIPTS / f"{day}.md"]
-    stamp = sum(f.stat().st_mtime for f in files if f.exists())
+    stamp = tuple((st.st_mtime_ns, st.st_size) for st in (f.stat() for f in files if f.exists()))   # size too: two writes can share a timestamp
     hit = _day_cache.get(day)
     if hit and hit[0] == stamp:
         return hit[1], hit[2]
@@ -635,6 +635,7 @@ def delete_group(kind: str, key: str) -> dict:
     trash = TRANSCRIPTS / ".trash"
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     n_lines = n_calls = 0
+    touched: dict[str, int] = {}          # who lost lines -> earliest lost line (their reads since then used it)
     parts = merged_id_of()
     for d in all_days():
         _, calls = day_data(d)
@@ -654,7 +655,12 @@ def delete_group(kind: str, key: str) -> dict:
                     r = json.loads(line)
                 except ValueError:
                     keep.append(line); continue
-                (gone if hit(r["t"], r.get("ch")) else keep).append(line)
+                if hit(r["t"], r.get("ch")):
+                    gone.append(line)
+                    if r.get("user"):
+                        touched[r["user"]] = min(touched.get(r["user"], r["t"]), r["t"])
+                else:
+                    keep.append(line)
             if gone:
                 with (trash / f"{d}-deleted-{stamp}.jsonl").open("a", encoding="utf-8") as f:
                     f.write("\n".join(gone) + "\n")
@@ -685,6 +691,8 @@ def delete_group(kind: str, key: str) -> dict:
     if kind == "call":
         unmerge_call(key)
     prune_merges()
+    if PERSONA_BOOK and touched:
+        PERSONA_BOOK.forget(touched)
     return {"calls": n_calls, "lines": n_lines}
 
 
@@ -1285,10 +1293,12 @@ def save_settings(**kw):
 
 # Settings the dashboard can change (stored with the model choice in settings.json).
 SETTING_DEFAULTS = {"splitLines": True, "personality": True, "qaLinks": True, "nameStyle": "nick", "autoUpdate": True, "sensitivity": "normal", "language": "en",
-                    "background": "dim", "vocabulary": "", "boost": "normal"}
+                    "background": "dim", "vocabulary": "", "boost": "normal",
+                    "personaModel": "claude"}
 SETTING_CHOICES = {"nameStyle": ["nick", "display", "username"],   # how people are named: server nickname, display name, username
                    "sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
                    "boost": ["off", "low", "normal", "high"],     # how hard the models lean towards listed words
+                   "personaModel": ["claude", "local"],   # who writes personality reads: Claude (online, with a key) or LFM3 here
                    "language": ["en"]}      # Earshot transcribes English only: every model is held to it
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 VAD_SENSITIVITY = {"high": 0.35, "normal": 0.5, "low": 0.65}  # speech probability the VAD must reach (Silero's default is 0.5)
@@ -1442,9 +1452,14 @@ def persona_build(raw: str) -> dict:
     (and a plain-text version for Copy and as a fallback). Signals are ranked in
     code, so the order never depends on the small model."""
     summary, big5, signals, quotes = _persona_parse(raw)
-    summary = re.sub(r"\s+\([^()]{1,40}\)(?=\s+(?:is|comes|seems|sounds|was)\b)", "", summary, count=1)   # "Jo(h)n (Gator) comes across" -> "Jo(h)n comes across"
     if not big5 and not signals:
         return {"text": (raw or "").strip()[:1500], "data": None}   # unparseable: show what came back
+    return persona_from_fields(summary, big5, signals, quotes)
+
+
+def persona_from_fields(summary: str, big5: dict, signals: dict, quotes: list) -> dict:
+    """big5: {"O": (score, reason), ...}; signals: {"warmth": (score, reason), ...}."""
+    summary = re.sub(r"\s+\([^()]{1,40}\)(?=\s+(?:is|comes|seems|sounds|was)\b)", "", summary, count=1)   # "Jo(h)n (Gator) comes across" -> "Jo(h)n comes across"
 
     b = lambda k: big5.get(k, (3, ""))[0]
     traits = [_SIG_TRAIT[k] for k, _ in PERSONA_SIGNALS if signals.get(k, (0, ""))[0] >= 2]
@@ -1533,7 +1548,11 @@ class PersonalityReader:
 
     def info(self) -> dict:
         eng, why = self.engine_here()
-        return {"available": bool(eng), "engine": eng, "model": LLM_NAME, "reason": why, "loaded": self.model is not None}
+        online = persona_engine() == "claude"
+        return {"available": online or bool(eng), "engine": "claude" if online else eng, "model": CLAUDE_NAME if online else LLM_NAME,
+                "online": online, "claudeKey": bool(claude_key()),
+                "localAvailable": bool(eng), "reason": "" if online else why, "loaded": self.model is not None,
+                "first": PERSONA_FIRST, "every": PERSONA_EVERY}
 
     def _load(self, eng: str):
         if self.model is not None:
@@ -1587,6 +1606,19 @@ class PersonalityReader:
             prompt = prompt.rstrip()[:-len("</think>")]
         thought = gen(prompt, think_tokens).split("</think>", 1)[0]
         return prefix + gen(prompt + thought + "\n</think>\n" + prefix, answer_tokens)
+
+    def read_lines(self, name: str, said: list[str]) -> dict:
+        """A read from the small local model, from their lines (oldest first)."""
+        eng, why = self.engine_here()
+        if not eng:
+            raise PersonaError(why)
+        messages = [{"role": "system", "content": PERSONA_SYSTEM},
+                    {"role": "user", "content": f"Name: {name}\nThings {name} said in their calls, oldest first:\n" + "\n".join("- " + x for x in said)}]
+        with self.lock:
+            self._load(eng)
+            raw = self.think_then_answer(messages, prefix="SUMMARY:", think_tokens=420, answer_tokens=800)
+            self.last_used = time.time()
+        return persona_build(raw)
 
     def _idle_unload(self):
         while True:
@@ -1651,6 +1683,372 @@ class PersonalityReader:
         for old in [k for k, v in self.jobs.items() if time.time() - v["started"] > 3600]:
             self.jobs.pop(old, None)
         return {"id": jid, **{k: job[k] for k in ("status", "lines", "words")}}
+
+
+# ---------------------------------------------------------------- stored personality reads
+# One read per person (by Discord id) across all their calls: the first once they
+# have said PERSONA_FIRST lines, then again after every PERSONA_EVERY new lines.
+# Every read is kept in personas.json. Claude (online, with an API key) or the
+# small local model writes them.
+CLAUDE_MODEL = "claude-opus-5-5"
+CLAUDE_NAME = "Claude Opus 5.5"
+PERSONA_FIRST = 40          # lines before the first read
+PERSONA_EVERY = 400         # new lines before the next one
+PERSONA_RECENT_DAYS = 3     # reads happen by themselves for people heard this recently; others when opened
+
+
+def secrets_path() -> Path:
+    return TRANSCRIPTS.parent / "secrets.json"
+
+
+def load_secrets() -> dict:
+    try:
+        return json.loads(secrets_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_secret(key: str, val: str | None):
+    st = load_secrets()
+    if val:
+        st[key] = val
+    else:
+        st.pop(key, None)
+    tmp = secrets_path().with_suffix(".json.tmp")
+    tmp.unlink(missing_ok=True)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # only this user can ever read it
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps(st))
+    os.replace(tmp, secrets_path())
+
+
+def claude_key() -> str:
+    # Only a key saved in Settings: lines go to Anthropic only after you chose that there.
+    return (load_secrets().get("anthropicKey") or "").strip()
+
+
+def persona_engine() -> str:
+    """"claude" when that is picked and there is a key, else "local"."""
+    return "claude" if current_settings()["personaModel"] == "claude" and claude_key() else "local"
+
+
+PERSONA_SYSTEM_CLAUDE = """You read how one person comes across in voice calls among a group of friends who mostly play games together, from automatic transcripts of what was said. This is an impression of their style with others, for fun, not a medical or psychological diagnosis.
+
+You get excerpts from their calls, oldest first. Lines marked ">>" are the person; lines marked "  ·" are other people speaking just before, for context. Judge only the person, and use the context to read their lines correctly: who they are replying to, whether something is a joke, banter or sarcasm, and whether a harsh word is aimed at someone or at the game.
+
+Calibrate for this setting:
+- Friends gaming trash-talk, swearing at the game and playful insults that both sides enjoy are normal here. Count antagonism only for real hostility, contempt or putting people down.
+- Self-focus means centring talk on themselves, bragging, wanting admiration, dismissing others; talking about their own play is not self-focus by itself.
+- Transcripts have errors and missing words. Don't build a rating on one odd line; look for patterns across calls.
+- If the lines don't show a trait, rate it low (signals) or average (Big Five) rather than guessing.
+
+Ratings:
+- Signals 0 to 3 (0 none, 1 a little, 2 clear, 3 strong): self_focus, antagonism, manipulation (flatters or guilt-trips to get their way, says one thing and means another), impulsiveness (reactive, volatile, blurts things out), warmth (notices others, supportive, includes people, kind).
+- Big Five 1 to 5 (3 is average): openness, conscientiousness, extraversion, agreeableness, stability (emotional stability: calm and steady vs tense and reactive).
+
+Write the summary as one plain sentence of at most 25 words on how they come across, calling them only by the name you are given (other names in the lines are other people). Each reason is at most 12 words, from their actual words. Quotes are up to three short things they said that show their style, copied from their lines."""
+
+
+def _persona_schema() -> dict:
+    def rated(lo, hi):
+        return {"type": "object", "properties": {"score": {"type": "integer", "enum": list(range(lo, hi + 1))}, "reason": {"type": "string"}},
+                "required": ["score", "reason"], "additionalProperties": False}
+    sig = ["self_focus", "antagonism", "manipulation", "impulsiveness", "warmth"]
+    big = ["openness", "conscientiousness", "extraversion", "agreeableness", "stability"]
+    props = {"summary": {"type": "string"}, **{k: rated(0, 3) for k in sig}, **{k: rated(1, 5) for k in big},
+             "quotes": {"type": "array", "items": {"type": "string"}}}
+    return {"type": "object", "properties": props, "required": list(props), "additionalProperties": False}
+
+
+_BIG_KEYS = {"openness": "O", "conscientiousness": "C", "extraversion": "E", "agreeableness": "A", "stability": "S"}
+
+
+def persona_from_json(d: dict) -> dict:
+    sig = {k.replace("_", "-"): (int(d[k]["score"]), str(d[k].get("reason", ""))) for k in
+           ("self_focus", "antagonism", "manipulation", "impulsiveness", "warmth") if isinstance(d.get(k), dict) and "score" in d[k]}
+    big = {v: (int(d[k]["score"]), str(d[k].get("reason", ""))) for k, v in _BIG_KEYS.items() if isinstance(d.get(k), dict) and "score" in d[k]}
+    quotes = [str(q).strip().strip('"“”').strip() for q in (d.get("quotes") or []) if str(q).strip()][:3]
+    return persona_from_fields(str(d.get("summary", "")).strip(), big, sig, quotes)
+
+
+class PersonaError(Exception):
+    """retry: worth trying again later (network, rate limit). Otherwise the same
+    lines would fail the same way, so wait for more lines or Read again."""
+    def __init__(self, msg: str, retry: bool = False):
+        super().__init__(msg)
+        self.retry = retry
+
+
+def claude_persona(name: str, excerpt: str, key: str) -> tuple[dict, str]:
+    """One read from Claude. Returns (built report, model that wrote it)."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=key, timeout=600, max_retries=3)
+    try:
+        # Streaming: a long transcript in, and Claude thinks before it answers.
+        with client.beta.messages.stream(
+                model=CLAUDE_MODEL, max_tokens=16000,
+                betas=["server-side-fallback-2026-07-01"], fallbacks="default",   # if the model declines, the API reruns it on a fallback model
+                output_config={"effort": "high", "format": {"type": "json_schema", "schema": _persona_schema()}},
+                system=PERSONA_SYSTEM_CLAUDE,
+                messages=[{"role": "user", "content": f"Name: {name}\n\nExcerpts from {name}'s calls, oldest first:\n\n{excerpt}"}]) as stream:
+            resp = stream.get_final_message()
+    except anthropic.AuthenticationError:
+        raise PersonaError("Anthropic refused the API key. Check it in Settings.")
+    except anthropic.PermissionDeniedError:
+        raise PersonaError("This API key can't use " + CLAUDE_NAME + ".")
+    except anthropic.RateLimitError:
+        raise PersonaError("Anthropic is rate-limiting this key. Earshot tries again later.", retry=True)
+    except anthropic.APIConnectionError:
+        raise PersonaError("Couldn't reach Anthropic. Earshot tries again later.", retry=True)
+    except anthropic.APIStatusError as e:
+        raise PersonaError(f"Anthropic error {e.status_code}: {getattr(e, 'message', '')}"[:300], retry=e.status_code >= 500 or e.status_code in (408, 409, 429))
+    if resp.stop_reason == "refusal":
+        raise PersonaError("Claude declined to read this person.")
+    if resp.stop_reason == "max_tokens":
+        raise PersonaError("Claude's answer was cut off.")
+    # After a server-side fallback, content holds the declined model's partial answer,
+    # a "fallback" block, then the fallback model's answer (which may continue the partial).
+    blocks = list(resp.content)
+    cut = max((i for i, b in enumerate(blocks) if getattr(b, "type", "") == "fallback"), default=-1)
+    text_of = lambda bs: "".join(b.text for b in bs if getattr(b, "type", "") == "text")
+    after, before = text_of(blocks[cut + 1:]), text_of(blocks[:max(cut, 0)])
+    data = None
+    for cand in (after, before + after):
+        try:
+            data = json.loads(cand)
+            break
+        except ValueError:
+            continue
+    if not isinstance(data, dict):
+        raise PersonaError("Claude's answer wasn't in the expected form.")
+    return persona_from_json(data), getattr(resp, "model", CLAUDE_MODEL)
+
+
+def check_claude_key(key: str) -> str | None:
+    """None if Anthropic accepts the key, else why not."""
+    import anthropic
+    try:
+        anthropic.Anthropic(api_key=key, timeout=20, max_retries=1).models.retrieve(CLAUDE_MODEL)
+        return None
+    except anthropic.AuthenticationError:
+        return "Anthropic refused this key."
+    except anthropic.PermissionDeniedError:
+        return "This key can't use " + CLAUDE_NAME + "."
+    except anthropic.NotFoundError:
+        return "This key can't see " + CLAUDE_NAME + "."
+    except anthropic.APIConnectionError:
+        return "Couldn't reach Anthropic to check the key."
+    except anthropic.APIStatusError as e:
+        return f"Anthropic error {e.status_code}."
+
+
+def person_excerpt(uid: str, max_words: int, context: bool) -> tuple[str, int, int]:
+    """Their most recent lines (newest kept first when cutting to max_words), grouped by
+    call, oldest first. With context, up to two lines others said just before each of
+    theirs. Returns (text, their lines used, words)."""
+    blocks, used, words = [], 0, 0
+    for d in sorted(all_days(), reverse=True):
+        recs, calls = day_data(d)
+        recs = [r for r in recs if r.get("text") and not r.get("bg")]
+        recs.sort(key=lambda r: r["t"])
+        idx = [i for i, r in enumerate(recs) if r.get("user") == uid]
+        if not idx:
+            continue
+        day_blocks, cur_call, cur = [], object(), []
+        for i in idx:
+            r = recs[i]
+            same_ch = lambda a, b: not a.get("ch") or not b.get("ch") or a["ch"] == b["ch"]
+            call = next((c for c in calls if c["start"] <= r["t"] <= c["end"] and same_ch(r, c)), None)
+            cid = call and call.get("id")
+            if cid != cur_call:
+                if cur:
+                    day_blocks.append(cur)
+                where = " · ".join(x for x in ((call or {}).get("chName"), (call or {}).get("guildName")) if x)
+                cur, cur_call = [f"--- call on {d}" + (f" in {where}" if where else "") + " ---"], cid
+            if context:
+                before = [recs[j] for j in range(max(0, i - 40), i) if recs[j].get("user") != uid and same_ch(r, recs[j])
+                          and r["t"] - recs[j].get("end", recs[j]["t"]) < 20000][-2:]
+                for o in before:
+                    if not any(o["text"] in line for line in cur[-3:]):
+                        cur.append(f"  · {o.get('speaker') or 'someone'}: {o['text'].strip()}")
+            cur.append(">> " + r["text"].strip())
+            used += 1
+            words += len(r["text"].split())
+        if cur:
+            day_blocks.append(cur)
+        blocks = day_blocks + blocks            # this day goes before the later ones already gathered
+        if words >= max_words:
+            break
+    flat = [line for b in blocks for line in b]
+    # cut from the oldest end to the word budget
+    total, keep = 0, []
+    for line in reversed(flat):
+        total += len(line.split())
+        if total > max_words * (2 if context else 1):
+            break
+        keep.append(line)
+    keep.reverse()
+    while keep and not keep[0].startswith(("---", ">>")):
+        keep.pop(0)
+    mine = [line for line in keep if line.startswith(">> ")]
+    return "\n".join(keep), len(mine), sum(len(line.split()) - 1 for line in mine)
+
+
+PERSONA_BOOK: "PersonaBook | None" = None
+
+
+class PersonaBook:
+    def __init__(self, hub, reader: "PersonalityReader"):
+        self.hub, self.reader = hub, reader
+        self.file = TRANSCRIPTS.parent / "personas.json"
+        self.lock = threading.Lock()
+        try:
+            self.data: dict = json.loads(self.file.read_text(encoding="utf-8"))
+        except Exception:
+            self.data = {}
+        self.queue: list[str] = []            # asked for now (opened with no read yet, or Read again)
+        self.status: dict[str, dict] = {}     # uid -> {"state": "queued"|"reading", "model", "since"}
+        self.errors: dict[str, dict] = {}     # uid -> {"at", "msg", "retry", "n", "lines"}
+        self.wake = threading.Event()
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _save(self):
+        tmp = self.file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.file)
+
+    def _person(self, uid: str) -> dict | None:
+        return next((p for p in people_summary(self.hub) if p["id"] == uid), None)
+
+    def view(self, uid: str) -> dict:
+        p = self._person(uid) or {}
+        reads = (self.data.get(uid) or {}).get("reads", [])
+        lines = p.get("lines", 0)
+        nxt = (reads[-1]["lines"] + PERSONA_EVERY) if reads else PERSONA_FIRST
+        st = self.status.get(uid)
+        err = self.errors.get(uid)
+        err = err and (err["at"], err["msg"])
+        return {"user": uid, "name": p.get("name"), "lines": lines, "next": nxt, "first": PERSONA_FIRST, "every": PERSONA_EVERY,
+                "state": st and st["state"], "working_model": st and st.get("model"),
+                "error": err[1] if err and (not reads or err[0] > reads[-1]["at"] / 1000) else None,
+                "engine": persona_engine(), "reads": reads}
+
+    def ask(self, uid: str, force: bool = False) -> dict:
+        """Opened in the dashboard: queue a read if there is none yet (or Read again)."""
+        if not current_settings()["personality"]:
+            return {"error": "Personality reads are turned off in Settings."}
+        p = self._person(uid)
+        if not p:
+            return {"error": "Nothing recorded for this person yet."}
+        reads = (self.data.get(uid) or {}).get("reads", [])
+        due = (not reads and p["lines"] >= PERSONA_FIRST) or (reads and p["lines"] - reads[-1]["lines"] >= PERSONA_EVERY)
+        if force and p["lines"] < 4:
+            return {"error": "Not enough to go on yet."}
+        if due and not force and self._held(uid, p["lines"]):
+            due = False                           # failed recently: the loop tries again when the wait is over
+        if (force or due) and uid not in self.status:
+            self.errors.pop(uid, None)
+            self.queue.append(uid)
+            self.status[uid] = {"state": "queued", "since": time.time()}
+            self.wake.set()
+        return self.view(uid)
+
+    def _due(self) -> str | None:
+        recent = (time.time() - PERSONA_RECENT_DAYS * 86400) * 1000
+        best = None
+        for p in people_summary(self.hub):
+            uid = p["id"]
+            if p["last"] < recent or uid in self.status:
+                continue
+            if self._held(uid, p["lines"]):
+                continue
+            reads = (self.data.get(uid) or {}).get("reads", [])
+            if (not reads and p["lines"] >= PERSONA_FIRST) or (reads and p["lines"] - reads[-1]["lines"] >= PERSONA_EVERY):
+                if not best or p["last"] > best["last"]:
+                    best = p
+        return best and best["id"]
+
+    def _held(self, uid: str, lines: int) -> bool:
+        """After a failure: a network-type error waits 30 min, doubling each time (at most
+        8 h); a refusal or bad answer waits for 100 more lines (or Read again)."""
+        err = self.errors.get(uid)
+        if not err:
+            return False
+        if err["retry"]:
+            return time.time() - err["at"] < min(1800 * 2 ** (err["n"] - 1), 8 * 3600)
+        return lines - err["lines"] < 100
+
+    def _fail(self, uid: str, msg: str, retry: bool):
+        old = self.errors.get(uid) or {}
+        p = self._person(uid) or {}
+        self.errors[uid] = {"at": time.time(), "msg": msg, "retry": retry, "n": old.get("n", 0) + 1, "lines": p.get("lines", 0)}
+
+    def forget(self, touched: dict):
+        """Lines were deleted: drop reads that may have used them ({uid: earliest deleted t})."""
+        with self.lock:
+            changed = False
+            for uid, t in touched.items():
+                book = self.data.get(uid)
+                if not book:
+                    continue
+                keep = [r for r in book["reads"] if r["at"] < t]
+                if len(keep) != len(book["reads"]):
+                    book["reads"] = keep; changed = True
+                if not keep:
+                    self.data.pop(uid, None)
+            if changed:
+                self._save()
+
+    def _loop(self):
+        time.sleep(20)
+        while True:
+            self.wake.wait(60)
+            self.wake.clear()
+            while current_settings()["personality"]:
+                uid = self.queue.pop(0) if self.queue else self._due()
+                if not uid:
+                    break
+                try:
+                    self._read(uid)
+                except PersonaError as e:
+                    self._fail(uid, str(e), e.retry)
+                except Exception as e:
+                    self._fail(uid, f"{type(e).__name__}: {e}"[:300], True)
+
+    def _read(self, uid: str):
+        self.status[uid] = {"state": "reading", "since": time.time()}
+        try:
+            self._read_now(uid)
+        finally:
+            self.status.pop(uid, None)
+
+    def _read_now(self, uid: str):
+        p = self._person(uid)
+        if not p:
+            raise PersonaError("Nothing recorded for this person.")
+        name = p.get("name") or uid
+        eng = persona_engine()
+        t0 = time.time()
+        if eng == "claude":
+            self.status[uid]["model"] = CLAUDE_NAME
+            excerpt, used, words = person_excerpt(uid, 20000, context=True)
+            print(f"Personality read: {name} with {CLAUDE_NAME} ({used} lines)", flush=True)
+            built, model = claude_persona(name, excerpt, claude_key())
+            model_name = CLAUDE_NAME if model.startswith(CLAUDE_MODEL) else model
+        else:
+            self.status[uid]["model"] = LLM_NAME
+            excerpt, used, words = person_excerpt(uid, 2500, context=False)
+            said = [line[3:] for line in excerpt.splitlines() if line.startswith(">> ")]
+            built = self.reader.read_lines(name, said)
+            model_name = LLM_NAME
+        if not built.get("data"):
+            raise PersonaError("The model's answer couldn't be read.")
+        rec = {"at": int(time.time() * 1000), "lines": p["lines"], "used": used, "words": words, "model": model_name,
+               "seconds": round(time.time() - t0, 1), "name": name, "data": built["data"], "text": built["text"]}
+        with self.lock:
+            self.data.setdefault(uid, {"reads": []})["reads"].append(rec)
+            self._save()
+        print(f"Personality read: {name} done in {rec['seconds']}s", flush=True)
 
 
 # ---------------------------------------------------------------- questions and answers
@@ -2843,6 +3241,9 @@ async def main():
     threading.Thread(target=people_files_loop, daemon=True).start()
     persona = PersonalityReader()
     qa_judge = QAJudge(persona)
+    persona_book = PersonaBook(hub, persona)
+    global PERSONA_BOOK
+    PERSONA_BOOK = persona_book
     threading.Thread(target=updater.loop, daemon=True).start()
     lang_cli = "--language" in sys.argv                  # an explicit --language wins over the setting
     threading.Thread(target=transcriber, args=(q, writer, hub, language, lang_cli), daemon=True).start()
@@ -2965,6 +3366,29 @@ async def main():
             except (ValueError, OSError) as e:
                 res = {"error": str(e)}
             return respond(res, status=400 if "error" in res else 200)
+        if path == "/api/persona/person":
+            uid = params.get("user", "")
+            if not re.fullmatch(r"\d{15,22}", uid):
+                return respond({"error": "bad request"}, status=400)
+            if params.get("ask") == "1" or params.get("fresh") == "1":
+                if request.headers.get("X-CT") != "1":
+                    return respond({"error": "forbidden"}, status=403)
+                res = persona_book.ask(uid, force=params.get("fresh") == "1")
+                return respond(res, status=400 if "error" in res else 200)
+            return respond(persona_book.view(uid))
+        if path == "/api/persona/key":
+            # the key comes in a header, never the URL, so it can't end up in a log or history
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            key = (request.headers.get("X-Key") or "").strip()
+            if key:
+                if not re.fullmatch(r"[A-Za-z0-9_\-]{20,300}", key):
+                    return respond({"error": "That doesn't look like an Anthropic API key."}, status=400)
+                why = await asyncio.to_thread(check_claude_key, key)
+                if why:
+                    return respond({"error": why}, status=400)
+            save_secret("anthropicKey", key or None)
+            return respond(persona.info())
         if path == "/api/persona":
             job = persona.jobs.get(params.get("id", ""))
             return respond(job or {"error": "unknown job"}, status=200 if job else 404)

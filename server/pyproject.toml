@@ -23,6 +23,7 @@ dependencies = [
     "soundfile>=0.14.0",
     "websockets>=17.4",
     "mlx-vlm>=0.7.11 ; sys_platform == 'darwin'",
+    "anthropic>=2.12",            # Claude for personality reads (optional: only used with an API key)
 ]
 
 [tool.uv]

@@ -447,6 +447,13 @@ body.compact #feedmeta { display: none; }
 .pbody .pquotes { margin: 0; padding-left: 16px; }
 .pbody .pquotes li { color: var(--text-secondary); font-style: italic; margin: 3px 0; }
 @media (max-width: 460px) { .pbody .pb { grid-template-columns: 110px 1fr 28px; } .pbody .pbl { font-size: 12px; } }
+.modal.persona .phist { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; font-size: 11.5px; color: var(--text-muted); }
+.modal.persona .phist button { font-size: 11.5px; padding: 2px 9px; border-radius: 999px; }
+.modal.persona .phist button.on { border-color: var(--accent); color: var(--text-primary); }
+.modal.persona .pnext { font-size: 12px; color: var(--text-secondary); margin-top: 10px; }
+.modal.persona .pnext .pwait { padding: 0; }
+.modal.persona .perr { color: var(--bad, #e5565b); }
+.spot-foot { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
 .pwait { display: flex; align-items: center; gap: 10px; color: var(--text-secondary); padding: 18px 0; }
 .pwait .s { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -500,6 +507,10 @@ body.compact #feedmeta { display: none; }
 .srow b { font-weight: 500; font-size: 13px; color: var(--text-primary); }
 .srow small { color: var(--text-muted); font-size: 11.5px; margin-top: 1px; }
 .srow input[type=checkbox] { width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
+.srow.key { flex-wrap: wrap; }
+.srow .keyin { flex-direction: row; gap: 6px; align-items: center; flex: 1 1 260px; justify-content: flex-end; }
+.srow .keyin input { flex: 1; min-width: 0; max-width: 240px; font: inherit; font-family: var(--mono); font-size: 12px; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; outline: none; }
+.srow .keyin input:focus { border-color: var(--accent); }
 .srow.vocab { flex-direction: column; align-items: stretch; gap: 6px; }
 .srow.vocab textarea { font: inherit; font-family: var(--mono); font-size: 12px; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; min-height: 64px; outline: none; }
 .srow.vocab textarea:focus { border-color: var(--accent); }
@@ -831,7 +842,7 @@ function renderFeed(onlyAppend = false, around = null) {
     const k = keyOf.get(r);
     const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
     const dimBg = r.bg && bgMode() === 'dim';
-    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read (small local model)"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
+    html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who" data-k="${esc(k)}" title="Right-click for a personality read"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
@@ -2209,6 +2220,7 @@ function applySettings() {
 loadServerSettings().then(() => loadPeople());
 async function openSettings() {
   const ss = await loadServerSettings() || {};
+  await loadPersonaInfo();
   const as = desk?.appSettings ? await desk.appSettings() : null;
   const bg = $('#modal'), box = bg.firstElementChild;
   box.classList.add('persona', 'settings');
@@ -2236,7 +2248,10 @@ async function openSettings() {
       ${sel('boost', 'How hard to listen for them', ss.boost || 'normal', [['off', 'Only fix spelling'], ['low', 'Gently'], ['normal', 'Normal'], ['high', 'Strongly']], 'Stronger catches more of them, and is more likely to write one that wasn\'t said.')}
       <div class="srow"><span><b>Language</b><small>English only. Both models are held to English words, so they never switch to another language.</small></span></div>
       <div class="sh">Personality reads</div>
-      ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the Personalities panel: a small local model reads how each person comes across from what they said. An impression, not a diagnosis.')}
+      ${tog('personality', 'Personality reads', ss.personality !== false, `The Read buttons and the Personalities panel: how each person comes across from what they said. The first read comes once they have said ${personaInfo?.first || 40} lines, then a new one after every ${personaInfo?.every || 400} more, and every read is kept. An impression, not a diagnosis.`)}
+      ${sel('personaModel', 'Who writes the reads', ss.personaModel || 'claude', [['claude', 'Claude Opus 5.5 (online)'], ['local', 'LFM3 on this computer']], 'Claude is much better at reading people, and reads their lines with what others said around them. With Claude, those lines are sent to Anthropic for each read. LFM3 keeps everything on this computer.')}
+      <div class="srow key"><span><b>Claude API key</b><small id="keynote">${personaInfo?.claudeKey ? 'Saved on this computer. Earshot only sends it to Anthropic.' : 'Needed for Claude. Get one at console.anthropic.com. Without one, LFM3 writes the reads.'}</small></span>
+        <span class="keyin"><input type="password" data-k="key" placeholder="${personaInfo?.claudeKey ? '••••••••  saved' : 'sk-ant-…'}" autocomplete="off" spellcheck="false"><button data-a="savekey">Save key</button>${personaInfo?.claudeKey ? '<button data-a="delkey">Remove key</button>' : ''}</span></div>
       ${tog('qaLinks', 'Link questions to answers', ss.qaLinks !== false, 'The small local model used for personality reads (LFM3) thinks through each question with what was said around it, skips rhetorical ones, and finds the line that answers it, if any.')}
       <div class="sh">Updates</div>
       ${tog('autoUpdate', 'Check for updates automatically', ss.autoUpdate !== false, `Version ${esc(upd?.current || '—')}. Checks when the app starts and every 6 hours.`)}
@@ -2263,9 +2278,25 @@ async function openSettings() {
     if (k === 'background' || k === 'nameStyle') { await loadPeople(); renderAll(); renderCalls(); }
     if (k === 'vocabulary') { el.value = r.vocabulary; msg(r.vocabulary ? `Saved ${r.vocabulary.split('\n').length} words. New lines use them.` : 'Saved. No words listed.'); return; }
     if (k === 'qaLinks') { qaMemo = null; paintQA(); renderTimeline(stats()); if (v) fetchQA(); }
+    if (k === 'personaModel') { await loadPersonaInfo(); if (v === 'claude' && !personaInfo?.claudeKey) { msg('Saved. Add a Claude API key below; until then LFM3 writes the reads.'); return; } }
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
   box.querySelector('[data-a="close"]').onclick = close;
+  const setKey = async (k) => {
+    msg(k ? 'Checking the key with Anthropic…' : 'Removing…');
+    const r = await fetch('/api/persona/key', { method: 'POST', headers: { 'X-CT': '1', 'X-Key': k } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
+    if (r.error) { msg(r.error); return; }
+    personaInfo = r; close(); await openSettings();
+    $('#smsg').textContent = !k ? 'Key removed. LFM3 writes the reads.' : r.online ? 'Key saved. Claude writes the next reads.' : 'Key saved. LFM3 is still picked above, so it writes the reads.';
+  };
+  box.querySelector('[data-a="savekey"]').onclick = () => {
+    const v = box.querySelector('[data-k="key"]').value.replace(/[\s\u200b-\u200d\u2060\ufeff]/g, '');
+    if (!v) { msg('Paste your key first.'); return; }
+    if (/[^\x21-\x7e]/.test(v)) { msg('That key has characters an API key can\'t have. Copy it again from console.anthropic.com.'); return; }
+    setKey(v);
+  };
+  box.querySelector('[data-k="key"]').onkeydown = (e) => { if (e.key === 'Enter') box.querySelector('[data-a="savekey"]').click(); };
+  box.querySelector('[data-a="delkey"]')?.addEventListener('click', () => setKey(''));
   box.querySelector('[data-a="plugdir"]')?.addEventListener('click', () => desk.openPluginsFolder?.());
   box.querySelector('[data-a="check"]').onclick = async () => { msg('Checking…'); await fetch('/api/update/check', { method: 'POST', headers: { 'X-CT': '1' } }).catch(() => {}); await loadUpdate(); msg(upd?.available ? `${upd.latest} is available.` : upd?.error || 'You have the latest version.'); };
   box.querySelector('[data-a="model"]')?.addEventListener('click', (e) => { close(); setTimeout(() => $('#p-model').click(), 50); });
@@ -2452,7 +2483,67 @@ function personaGraphic(d) {
   }
   return h;
 }
+// Stored reads, one set per person (by Discord id) across all their calls.
+const isUid = (k) => /^\d{15,22}$/.test(k);
+const personaNote = (online) => online
+  ? 'Claude (made by Anthropic) rates how they come across from their lines and what others said just before, which are sent to Anthropic for each read. An impression of their style, not a diagnosis.'
+  : 'A small AI model on this computer rates how they come across from what they said: an impression of their style, not a diagnosis. Nothing leaves your computer.';
+const personView = (uid, how = '') => fetch(`/api/persona/person?user=${uid}${how ? `&${how}=1` : ''}`, how ? { method: 'POST', headers: { 'X-CT': '1' } } : {}).then((x) => x.json()).catch(() => null);
+const readWhen = (r) => `${fmtDay(r.at)}, ${new Date(r.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+function personWaitHtml(v, name) {
+  if (v.state) return `<div class="pwait"><span class="s"></span>${v.state === 'queued' ? 'Waiting its turn…' : `${esc(v.working_model || 'The model')} is reading what ${esc(name)} said…`}</div>`;
+  if (v.error) return `<p>${esc(v.error)}</p>`;
+  return `<div class="hint">The first read comes once ${esc(name)} has said ${v.first} lines (${v.lines.toLocaleString()} so far).</div>`;
+}
+async function personReadModal(uid, name) {
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona');
+  let closed = false, pick = null, v = null;
+  const close = () => { closed = true; bg.style.display = 'none'; box.classList.remove('persona'); removeEventListener('keydown', key); };
+  const key = (e) => { if (e.key === 'Escape') close(); };
+  addEventListener('keydown', key);
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const paint = () => {
+    const reads = v?.reads || [], r = pick != null ? reads[pick] : reads[reads.length - 1];
+    const left = v ? Math.max(0, v.next - v.lines) : 0;
+    const sub = r ? `${esc(readWhen(r))} · from their last ${r.used.toLocaleString()} lines · ${esc(r.model)}` : '';
+    const next = v && reads.length ? `<div class="pnext">${v.state ? personWaitHtml(v, name) : `${v.error ? `<span class="perr">The last try failed: ${esc(v.error)}</span><br>` : ''}Next read after ${left.toLocaleString()} more line${left === 1 ? '' : 's'} (${v.lines.toLocaleString()} so far).`}</div>` : '';
+    const hist = reads.length > 1 ? `<div class="phist"><span>Earlier reads</span>${reads.map((x, i) => i).reverse().map((i) => `<button data-i="${i}" class="${(pick ?? reads.length - 1) === i ? 'on' : ''}" title="${esc(reads[i].model)} · from ${reads[i].used} lines">${esc(fmtDay(reads[i].at))}</button>`).join('')}</div>` : '';
+    const body = !v ? '<div class="pwait"><span class="s"></span>Loading…</div>' : r ? personaGraphic(r.data) : personWaitHtml(v, name);
+    const online = r ? /claude/i.test(r.model) : personaInfo?.online;
+    box.innerHTML = `<h3>Personality read · ${esc(name)}</h3><div class="psub">${sub}</div><div class="pbody">${body}</div>${hist}${next}
+      <div class="pnote">${esc(personaNote(online))}</div>
+      <div class="btns">${r ? '<button data-a="copy">Copy</button>' : ''}${v && !v.state && v.lines >= 4 ? `<button data-a="again">${reads.length ? 'Read again now' : 'Read now'}</button>` : ''}<button data-a="close">Close</button></div>`;
+    box.querySelectorAll('.phist button').forEach((b) => b.onclick = () => { pick = +b.dataset.i; paint(); });
+    box.querySelectorAll('.btns button').forEach((b) => b.onclick = async () => {
+      if (b.dataset.a === 'close') close();
+      if (b.dataset.a === 'copy') navigator.clipboard?.writeText(box.querySelector('.pbody').innerText).then(() => { b.textContent = 'Copied'; });
+      if (b.dataset.a === 'again') {
+        const nv = await personView(uid, 'fresh'); if (closed) return;
+        if (nv?.reads) { v = nv; pick = null; paint(); poll(); } else box.querySelector('.pnote').textContent = nv?.error || 'The server isn\'t running.';
+      }
+    });
+  };
+  let polling = false;
+  async function poll() {
+    if (polling) return; polling = true;
+    try {
+      while (!closed && v?.state) {
+        await new Promise((res) => setTimeout(res, 1500));
+        const nv = await personView(uid); if (!nv || closed) break;
+        const had = v.reads.length; v = nv; if (v.reads.length !== had) pick = null; paint();
+      }
+    } finally { polling = false; }
+  }
+  bg.style.display = 'grid';
+  paint();
+  v = await personView(uid, 'ask');
+  if (closed) return;
+  if (!v || (v.error && !v.reads)) { box.querySelector('.pbody').innerHTML = `<p>${esc(v?.error || 'The server isn\'t running.')}</p>`; return; }
+  paint(); poll();
+}
 async function personaRead(k) {
+  if (isUid(k)) return personReadModal(k, nameFor(k));
   const c = currentCall(); if (!c) return;
   const name = nameFor(k), user = /^\d{15,22}$/.test(k) ? k : '';
   const speaker = user ? '' : String(k).replace(/^name:/, '');
@@ -2540,7 +2631,7 @@ function renderPers() {
   const html = top.map((p) => {
     const o = persOverview.get(p.k);
     const body = o?.sentence ? `<div class="ps">${esc(o.sentence)}</div><div class="pt">${esc(o.traits || '')}${o.at ? ` · ${ago(o.at)}` : ''}</div>`
-      : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o ? 'Reading…' : 'Waiting…'}</div>`;
+      : `<div class="pt">${o?.status === 'error' ? 'Couldn\'t read this one.' : o?.status === 'early' ? `First read at ${o.first} lines (${o.lines} so far)` : o ? 'Reading…' : 'Waiting…'}</div>`;
     return `<button class="pp" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: open the full read"><span class="pn"><span class="swatch" style="background:${colorFor(p.k)}"></span>${esc(nameFor(p.k))}</span>${body}</button>`;
   }).join('') + persRest(top);
   if (!setPers(box, html)) return;
@@ -2556,6 +2647,13 @@ async function refreshPers() {
   persBusy = true;
   try {
     for (const p of persCandidates()) {
+      if (isUid(p.k)) {
+        const v = await personView(p.k, 'ask');
+        const r = v?.reads?.[v.reads.length - 1];
+        if (r) persOverview.set(p.k, { status: 'done', at: r.at, sentence: r.data?.summary || '', traits: (r.data?.traits || []).join(', ') });
+        else if (v) persOverview.set(p.k, { status: v.state ? 'working' : v.error ? 'error' : 'early', lines: v.lines, first: v.first });
+        renderPers(); continue;
+      }
       const user = /^\d{15,22}$/.test(p.k) ? p.k : '';
       const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', parts: partsParam(c), user, name: user ? nameFor(p.k) : String(p.k).replace(/^name:/, '') });
       const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
@@ -2613,7 +2711,12 @@ async function refreshSpotlight() {
   try {
     for (const k of spotKeys()) {
       const st = spotState.get(k);
-      if (st && st.callId === c.id && Date.now() - st.at < 120000) continue;    // read again every 2 minutes
+      if (st && st.callId === c.id && Date.now() - st.at < (isUid(k) ? 30000 : 120000)) continue;    // stored reads: look every 30 s; per-call ones: read again every 2 minutes
+      if (isUid(k)) {
+        const v = await personView(k, 'ask'), r = v?.reads?.[v.reads.length - 1];
+        if (v) spotState.set(k, { callId: c.id, at: Date.now(), html: r ? personaGraphic(r.data) + `<div class="spot-foot">${esc(readWhen(r))} · ${esc(r.model)}</div>` : personWaitHtml(v, nameFor(k)) });
+        renderSpotlight(); continue;
+      }
       const user = /^\d{15,22}$/.test(k) ? k : '';
       const q = new URLSearchParams({ day: daysOf(c).join(','), from: c.start, to: c.end, ch: new Set(partsOf(c).map((p) => p.ch)).size === 1 ? (c.ch || '') : '', parts: partsParam(c), user, name: user ? nameFor(k) : String(k).replace(/^name:/, '') });
       const r = await fetch('/api/persona/start?' + q, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => null);
