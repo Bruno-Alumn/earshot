@@ -462,6 +462,9 @@ body.compact #feedmeta { display: none; }
 .srow b { font-weight: 500; font-size: 13px; color: var(--text-primary); }
 .srow small { color: var(--text-muted); font-size: 11.5px; margin-top: 1px; }
 .srow input[type=checkbox] { width: 16px; height: 16px; flex: none; accent-color: var(--accent); }
+.srow.vocab { flex-direction: column; align-items: stretch; gap: 6px; }
+.srow.vocab textarea { font: inherit; font-family: var(--mono); font-size: 12px; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; resize: vertical; min-height: 64px; outline: none; }
+.srow.vocab textarea:focus { border-color: var(--accent); }
 .srow select { height: 28px; flex: none; }
 .srow button { flex: none; font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 5px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
 .no-persona .bar-row .read, .no-persona [data-panel="persona"] { display: none !important; }
@@ -2100,6 +2103,8 @@ async function openSettings() {
       ${tog('splitLines', 'Split lines at sentences', ss.splitLines !== false, 'When people talk over each other, lines interleave in the order they were said.')}
       ${sel('sensitivity', 'Speech detection', ss.sensitivity || 'normal', [['high', 'More sensitive'], ['normal', 'Normal'], ['low', 'Less sensitive']], 'More sensitive picks up quiet voices; less ignores background noise.')}
       ${sel('background', 'Background voices', ss.background || 'dim', [['dim', 'Dim them'], ['show', 'Show normally'], ['hide', 'Hide them']], 'Speech that doesn\'t sound like the person, like a video playing near their mic. Dimmed or hidden, they are left out of exports, Copy and talk stats; never in personality reads.')}
+      <label class="srow vocab"><span><b>Words to listen for</b><small>Names, slang and acronyms the models get wrong, like hotzone or CWIS. One a line, or separated by commas. If a word isn't said how it's spelled, add how it sounds after =, like CWIS = sea whiz. Lines are respelled to match, and both models lean towards these words.</small></span><textarea data-set="vocabulary" rows="4" spellcheck="false" placeholder="hotzone, CWIS, EU, nade">${esc(ss.vocabulary || '')}</textarea></label>
+      ${sel('boost', 'How hard to listen for them', ss.boost || 'normal', [['off', 'Only fix spelling'], ['low', 'Gently'], ['normal', 'Normal'], ['high', 'Strongly']], 'Stronger catches more of them, and is more likely to write one that wasn\'t said.')}
       <div class="srow"><span><b>Language</b><small>English only. Both models are held to English words, so they never switch to another language.</small></span></div>
       <div class="sh">Personality reads</div>
       ${tog('personality', 'Personality reads', ss.personality !== false, 'The Read buttons and the Personalities panel: a small local model reads how each person comes across from what they said. An impression, not a diagnosis.')}
@@ -2122,10 +2127,12 @@ async function openSettings() {
       const r = await fetch(`/api/plugins/enable?id=${encodeURIComponent(k.slice(7))}&on=${v ? 1 : 0}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
       msg(r.error || 'Saved. Reload the dashboard (⌘R / Ctrl+R) to apply.'); return;
     }
+    if (k === 'vocabulary' && encodeURIComponent(v).length > 7000) { msg('That list is too long to save. Remove some words and try again.'); return; }
     const r = await fetch(`/api/settings?key=${encodeURIComponent(k)}&value=${encodeURIComponent(v === true ? '1' : v === false ? '0' : v)}`, { method: 'POST', headers: { 'X-CT': '1' } }).then((x) => x.json()).catch(() => ({ error: 'The server isn\'t running.' }));
     if (r.error) { msg(r.error); return; }
     await loadServerSettings();
     if (k === 'background') renderAll();
+    if (k === 'vocabulary') { el.value = r.vocabulary; msg(r.vocabulary ? `Saved ${r.vocabulary.split('\n').length} words. New lines use them.` : 'Saved. No words listed.'); return; }
     if (k === 'qaLinks') { qaMemo = null; paintQA(); renderTimeline(stats()); if (v) fetchQA(); }
     msg(k === 'language' ? 'Saved. The model reloads with the new language.' : 'Saved.');
   });
