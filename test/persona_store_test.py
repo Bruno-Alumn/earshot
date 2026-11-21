@@ -61,7 +61,7 @@ check(set(sch["required"]) == set(sch["properties"]) and sch["additionalProperti
 # the book
 calls = []
 S.claude_persona_real = S.claude_persona
-S.claude_persona = lambda name, excerpt, key: (calls.append((name, excerpt.count(">> "))) or (built, "claude-opus-5-5"))
+S.claude_persona = lambda name, excerpt, key: (calls.append((name, excerpt.count(">> "))) or (built, "claude-sonnet-5-5"))
 class Reader:
     def read_lines(self, name, said): calls.append(("local", len(said))); return built
 book = S.PersonaBook(hub, Reader())
@@ -82,7 +82,7 @@ check(v["lines"] == 55, f"Gator's line count ({v['lines']})")
 book._read(A)
 check(calls and calls[-1] == ("John", 45), f"Claude got John's name and 45 lines ({calls[-1:]})")
 v = book.view(A)
-check(len(v["reads"]) == 1 and v["reads"][0]["model"] == "Claude Opus 5.5" and v["reads"][0]["lines"] == 45, "the read is stored with its model and line count")
+check(len(v["reads"]) == 1 and v["reads"][0]["model"] == "Claude Sonnet 5.5" and v["reads"][0]["lines"] == 45, "the read is stored with its model and line count")
 check(v["next"] == 45 + S.PERSONA_EVERY, f"next read at {45 + S.PERSONA_EVERY} lines ({v['next']})")
 due = book._due()
 check(due == B, f"after John, Gator is still due ({due})")
@@ -104,7 +104,7 @@ check(book._due() == A, "400 new lines: due again")
 S.save_settings(personaModel="local")
 book._read(A)
 v = book.view(A)
-check(len(v["reads"]) == 2 and v["reads"][-1]["model"] == S.LLM_NAME and v["reads"][0]["model"] == "Claude Opus 5.5", "second read kept next to the first (history)")
+check(len(v["reads"]) == 2 and v["reads"][-1]["model"] == S.LLM_NAME and v["reads"][0]["model"] == "Claude Sonnet 5.5", "second read kept next to the first (history)")
 check(calls[-1][0] == "local" and calls[-1][1] > 0, "local model got their lines only")
 S.save_settings(personaModel="claude")
 

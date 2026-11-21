@@ -1690,8 +1690,8 @@ class PersonalityReader:
 # have said PERSONA_FIRST lines, then again after every PERSONA_EVERY new lines.
 # Every read is kept in personas.json. Claude (online, with an API key) or the
 # small local model writes them.
-CLAUDE_MODEL = "claude-opus-5-5"
-CLAUDE_NAME = "Claude Opus 5.5"
+CLAUDE_MODEL = "claude-sonnet-5-5"
+CLAUDE_NAME = "Claude Sonnet 5.5"
 PERSONA_FIRST = 40          # lines before the first read
 PERSONA_EVERY = 400         # new lines before the next one
 PERSONA_RECENT_DAYS = 3     # reads happen by themselves for people heard this recently; others when opened
