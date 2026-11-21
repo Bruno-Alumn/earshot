@@ -1483,8 +1483,25 @@ class PersonalityReader:
         self.cache: dict[tuple, tuple[int, str]] = {}    # (day, call start, ch, who) -> (words, job id)
         threading.Thread(target=self._idle_unload, daemon=True).start()
 
+    _engine_lock = threading.Lock()
+    _engine_ok: tuple | None = None
+
+    @classmethod
+    def engine_here(cls) -> tuple[str | None, str]:
+        # One check at a time, remembered once it works: two threads importing the
+        # library at once could see it half-loaded and wrongly report it missing.
+        if cls._engine_ok:
+            return cls._engine_ok
+        with cls._engine_lock:
+            if cls._engine_ok:
+                return cls._engine_ok
+            res = cls._find_engine()
+            if res[0]:
+                cls._engine_ok = res
+            return res
+
     @staticmethod
-    def engine_here() -> tuple[str | None, str]:
+    def _find_engine() -> tuple[str | None, str]:
         import platform
         if sys.platform == "darwin" and platform.machine() == "arm64":
             try:

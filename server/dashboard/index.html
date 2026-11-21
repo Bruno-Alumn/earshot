@@ -2362,7 +2362,9 @@ window.openTranscribe = openTranscribe;
 
 // ------------------------------------------------------------ personality read (local LLM)
 let personaInfo = null;
-fetch('/api/persona/info').then((r) => r.json()).then((i) => { personaInfo = i; }).catch(() => {});
+const loadPersonaInfo = () => fetch('/api/persona/info').then((r) => r.json()).then((i) => { const was = personaInfo?.available; personaInfo = i; if (i.available && !was && panelShown('persona')) { renderPers(); refreshPers(); } }).catch(() => {});
+loadPersonaInfo();
+setInterval(() => { if (!personaInfo?.available) loadPersonaInfo(); }, 15000);   // ask again until the model is there
 document.addEventListener('contextmenu', (e) => {
   const w = e.target.closest?.('.line .who'); if (!w || SHARE || serverSettings?.personality === false) return;
   e.preventDefault(); personaRead(w.dataset.k);
