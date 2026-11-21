@@ -62,13 +62,15 @@ check(set(cs["required"]) == set(S.CODEBOOK) and cs["additionalProperties"] is F
 # fixed scoring rules
 sc = S.score_codes({"PUTDOWN": [1, 2, 3, 4, 5, 6, 999, -1, 2], "BANTER": [6], "HELP": list(range(1, 13)), "PLAN": [1, 2], "CARELESS": [3]}, 100)
 check(sc["counts"]["PUTDOWN"] == 5, "line numbers outside the excerpt and repeats are dropped; banter wins over put-down")
-check(sc["signals"]["antagonism"][0] == 2 and sc["signals"]["warmth"][0] == 3, f"rates map to fixed cut-offs, over lines + {S.SHRINK} ({sc['signals']['antagonism'][0]}, {sc['signals']['warmth'][0]})")
+check(sc["signals"]["antagonism"][0] == 3 and sc["signals"]["warmth"][0] == 3, f"signal rates map to fixed cut-offs ({sc['signals']['antagonism'][0]}, {sc['signals']['warmth'][0]})")
+check(all(v[0] is None for v in S.score_codes({"HELP": [1, 2, 3]}, 60)["signals"].values()), "under 100 counted turns, signals are not rated (no lean toward 'none')")
 big_sc = S.score_codes({"PUTDOWN": list(range(1, 61))}, 1000)
 check(big_sc["signals"]["antagonism"][0] == 3, "with lots of lines the lean toward neutral barely matters")
 check(S.score_codes({"PUTDOWN": [9]}, 10, denom=6)["counts"]["PUTDOWN"] == 1, "a tag on a late line still counts when fewer lines count toward the rate (bug fix)")
 check(sc["big5"]["C"][0] == 3 and sc["big5"]["O"][0] is None, "Big Five: net per 100 lines; under 3 lines of evidence is not rated")
-sc = S.score_codes({"PUTDOWN": [1, 2]}, 20)
-check(sc["signals"]["antagonism"][0] == 1, "a high rate from 2 lines still scores only 1 (score 2 needs 3 lines, 3 needs 5)")
+sc = S.score_codes({"PUTDOWN": [1, 2]}, 40 + 60)
+check(sc["signals"]["antagonism"][0] == 2 and S.score_codes({"PUTDOWN": [1, 2, 3, 4, 5, 6]}, 100)["signals"]["antagonism"][0] == 3
+      and S.score_codes({"PUTDOWN": [1, 2]}, 100, denom=100)["signals"]["antagonism"][0] == 2, "agreed lines needed: 1 for a score of 1, 2 for 2, 3 for 3")
 sc = S.score_codes({"COOPERATE": [1, 2, 3, 4, 5]}, 50)
 check(sc["big5"]["A"][0] == 4, "a 5 needs at least 8 lines of evidence")
 check(S.score_codes({"INITIATE": [1, 2, 3]}, 300, talk_ratio=2.0)["big5"]["E"][0] == S.score_codes({"INITIATE": [1, 2, 3]}, 300, talk_ratio=0.3)["big5"]["E"][0],
@@ -249,6 +251,17 @@ with (S.TRANSCRIPTS / f"{d2}.jsonl").open("w") as f:
 S._day_cache.clear()
 ex = [x for x in S.person_excerpt(A, 10**6, context=True)[0].split("--- call on " + d2)[1].split("\n---")[0].splitlines()]
 check("Voice 2" in ex[0] and "  · Ann: same channel talk" in ex and not any("Gator" in x for x in ex), f"call header and context from the same channel ({ex[:3]})")
+
+# stored reads tagged the current way but scored by older rules are scored again on load
+old = {"at": 1, "lines": 300, "used": 120, "method": "codebook-4", "name": "Old", "text": "",
+       "tagged": {c: ([1, 2, 3, 4, 5, 6] if c == "HELP" else []) for c in S.CODEBOOK},
+       "data": {"summary": "Old is helpful.", "n": 50, "talkRatio": 1.2, "signals": [], "big5": [], "agreement": 0.7}}
+(root / "personas.json").write_text(json.dumps({"999999999999999999": {"reads": [old]}}))
+book3 = S.PersonaBook(hub, Reader())
+r3 = book3.data["999999999999999999"]["reads"][0]
+check(r3["method"] == S.READ_METHOD and r3["data"]["rescoredFrom"] in ("codebook-4", "codebook-5") and r3["data"]["summary"] == "Old is helpful." and r3["data"]["agreement"] == 0.7,
+      "an older-rules read is scored again, keeping its summary and agreement")
+check(all(x["score"] is None for x in r3["data"]["signals"]), "...and with 50 counted turns its signals are now not rated")
 
 # a gendered summary is dropped (the scores stay)
 def fake3(system, schema, user, key):

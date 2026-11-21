@@ -1462,7 +1462,7 @@ def persona_from_fields(summary: str, big5: dict, signals: dict, quotes: list) -
     summary = re.sub(r"\s+\([^()]{1,40}\)(?=\s+(?:is|comes|seems|sounds|was)\b)", "", summary, count=1)   # "Jo(h)n (Gator) comes across" -> "Jo(h)n comes across"
 
     b = lambda k: (big5.get(k) or (3, ""))[0] or 3      # not rated counts as average for the trait words
-    traits = [_SIG_TRAIT[k] for k, _ in PERSONA_SIGNALS if signals.get(k, (0, ""))[0] >= 2]
+    traits = [_SIG_TRAIT[k] for k, _ in PERSONA_SIGNALS if ((signals.get(k) or (0, ""))[0] or 0) >= 2]
     for cond, word in [(b("E") >= 4, "outgoing"), (b("E") <= 2, "reserved"), (b("A") >= 4, "easygoing"),
                        (b("A") <= 2, "blunt"), (b("C") >= 4, "organised"), (b("S") <= 2, "tense"),
                        (b("S") >= 4, "steady"), (b("O") >= 4, "curious")]:
@@ -1861,7 +1861,8 @@ def claude_json(system: str, schema: dict, user: str, key: str) -> tuple[dict, s
 # Claude doesn't score people. It only tags each of the person's lines with
 # codes from a fixed codebook; fixed rules in code below turn the counts into
 # scores, so every read follows the same structure and can be checked.
-READ_METHOD = "codebook-4"
+READ_METHOD = "codebook-6"
+RESCORE_FROM = {"codebook-4", "codebook-5"}   # same tagging, older scoring rules: stored tags are scored again on load
 CODERS = 2                # each piece is tagged this many times independently; only tags they all agree on count
 
 # code: (what it means, what it is NOT, [(trait, +1/-1), ...])
@@ -1906,7 +1907,8 @@ SIGNAL_KEYS = ["self-focus", "antagonism", "manipulation", "impulsiveness", "war
 # per-100-line rates for scores 1, 2, 3 (warmth is common in team games, so it needs more)
 SIGNAL_CUTS = {"self-focus": (0.5, 2, 5), "antagonism": (0.5, 2, 5), "manipulation": (0.3, 1, 3),
                "impulsiveness": (0.5, 2, 5), "warmth": (1, 3, 6)}   # rates of tags both coders agreed on
-SIGNAL_MIN = {1: 2, 2: 3, 3: 5}                # lines needed for each score, whatever the rate
+SIGNAL_MIN = {1: 1, 2: 2, 3: 3}                # agreed lines needed for each score, whatever the rate (higher floors held back people who talk less)
+SIGNAL_MIN_TURNS = 100                         # fewer counted turns than this: signals are "not rated" (no evidence isn't evidence of none)
 BIG5_CUTS = (-6, -2, 2, 6)                     # net per 100 lines: below -6 is 1, ... at or above 6 is 5
 BIG5_MIN_EVIDENCE, BIG5_EXTREME_EVIDENCE = 3, 8
 
@@ -2001,10 +2003,15 @@ def score_codes(codes: dict, n: int, talk_ratio: float | None = None, denom: int
     signals = {}
     for k in SIGNAL_KEYS:
         cnt = pos.get(k, 0)
-        rate = per(cnt)
-        score = sum(rate >= cut for cut in SIGNAL_CUTS[k])
-        while score and cnt < SIGNAL_MIN[score]:      # not enough lines for that score
-            score -= 1
+        # Signals run from 0 (none), so leaning toward "neutral" would mean leaning toward none:
+        # people with fewer lines would look less warm. Plain rates, and no score at all below SIGNAL_MIN_TURNS.
+        rate = 100 * cnt / d_ if d_ else 0.0
+        if d_ < SIGNAL_MIN_TURNS:
+            score = None
+        else:
+            score = sum(rate >= cut for cut in SIGNAL_CUTS[k])
+            while score and cnt < SIGNAL_MIN[score]:      # not enough lines for that score
+                score -= 1
         signals[k] = (score, f"{cnt} of {d_} lines")
     big5 = {}
     for k in "OCEAS":
@@ -2276,11 +2283,34 @@ class PersonaBook:
             self.data: dict = json.loads(self.file.read_text(encoding="utf-8"))
         except Exception:
             self.data = {}
+        if self._rescore():
+            self._save()
         self.queue: list[str] = []            # asked for now (opened with no read yet, or Read again)
         self.status: dict[str, dict] = {}     # uid -> {"state": "queued"|"reading", "model", "since"}
         self.errors: dict[str, dict] = {}     # uid -> {"at", "msg", "retry", "n", "lines"}
         self.wake = threading.Event()
         threading.Thread(target=self._loop, daemon=True).start()
+
+    def _rescore(self) -> int:
+        """Reads tagged the current way but scored by older rules get scored again from
+        their stored tags (no new calls; the summary sentence is kept)."""
+        n_done = 0
+        for book in self.data.values():
+            for rec in book.get("reads", []):
+                if rec.get("method") not in RESCORE_FROM or not rec.get("tagged"):
+                    continue
+                d = rec.get("data") or {}
+                sc = score_codes(rec["tagged"], rec.get("used") or 0, d.get("talkRatio"), denom=d.get("n"))
+                built = persona_from_fields(d.get("summary", ""), sc["big5"], sc["signals"], [])
+                if not built.get("data"):
+                    continue
+                keep = {k: v for k, v in d.items() if k not in built["data"]}
+                rec["data"] = {**keep, **built["data"], "method": READ_METHOD, "rescoredFrom": rec["method"]}
+                rec["text"], rec["method"] = built["text"], READ_METHOD
+                n_done += 1
+        if n_done:
+            print(f"Personality reads: {n_done} scored again with the {READ_METHOD} rules", flush=True)
+        return n_done
 
     def _save(self):
         tmp = self.file.with_suffix(".json.tmp")

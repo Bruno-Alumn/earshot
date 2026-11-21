@@ -2757,7 +2757,7 @@ async function renderStudyPage() {
         <li><b>Their lines are gathered, without names.</b> Up to about 20,000 of their most recent words across all calls, with up to two lines others said just before and after each one, so jokes and replies read in context. The person becomes P and everyone else a letter, so no name, server or channel can sway the coding.</li>
         <li><b>Claude tags lines, it doesn't score people.</b> In pieces of ${S.rules?.chunk || 120} lines, each line gets codes from the fixed codebook below, or none. Most lines get none.</li>
         <li><b>Two independent passes.</b> Every piece is tagged ${S.rules?.coders || 2} times; only tags every pass agrees on count. How often they agreed is shown with each read.</li>
-        <li><b>Fixed rules make the scores.</b> Tags become rates per 100 turns (lines said back to back count as one), counting only turns that could show something (three words or more, or tagged, and not garbled), with 100 extra turns added so thin evidence leans to the middle. Signals use fixed cut-offs and need at least 2, 3 or 5 lines for a 1, 2 or 3. Big Five scores come from positive minus negative lines; a trait with fewer than 3 lines of evidence is "not rated", and a 1 or 5 needs 8. How much someone talks is shown but never changes a score.</li>
+        <li><b>Fixed rules make the scores.</b> Tags become rates per 100 turns (lines said back to back count as one), counting only turns that could show something (three words or more, or tagged, and not garbled), with 100 extra turns added so thin evidence leans to the middle. Signals use fixed cut-offs, need at least 1, 2 or 3 agreed lines for a 1, 2 or 3, and aren\'t rated until someone has 100 counted turns. Big Five scores come from positive minus negative lines; a trait with fewer than 3 lines of evidence is "not rated", and a 1 or 5 needs 8. How much someone talks is shown but never changes a score.</li>
         <li><b>A new read every ${S.rules?.every || 400} lines.</b> The first comes at ${S.rules?.first || 40} lines. Every read is kept, so you can see change over time.</li>
       </ol>
       <div class="sh2">The codebook <small>${Object.keys(cb).length} codes · method ${esc(S.method)}</small></div>
@@ -2807,6 +2807,7 @@ async function renderStudyPage() {
         <li><b>Turns, not fragments.</b> Lines said back to back count as one turn, so people whose speech gets cut into many short pieces don't count more often.</li>
         <li><b>Thin evidence leans to the middle.</b> Rates are taken over the lines plus ${100} extra, so a handful of lines can't swing someone to an extreme.</li>
         <li><b>Talking a lot isn't a trait.</b> How much someone talks is shown but never changes a score.</li>
+        <li><b>No evidence isn't "none".</b> Signals aren't rated until someone has 100 counted turns, so people who've said less don't look less warm or less anything.</li>
       </ul>`;
   }
 
