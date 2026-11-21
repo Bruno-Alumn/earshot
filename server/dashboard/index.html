@@ -2421,7 +2421,8 @@ function personaGraphic(d) {
     h += `<div class="phead">Signals <small>0 none · 3 strong</small></div><div class="pbars">`;
     for (const s of d.signals) {
       const fill = s.good ? '#3fb27f' : SIG_COLOR[s.score] || 'var(--accent)';
-      h += `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`
+      h += s.score == null ? `<div class="pb"><div class="pbl">${escc(s.label)}</div><span class="meter none"></span><div class="pbn" title="The model didn't rate this one">not rated</div></div>`
+        : `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`
         + (s.note ? `<div class="pbnote">${escc(s.note)}</div>` : '');
     }
     h += `</div>`;

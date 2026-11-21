@@ -1351,6 +1351,7 @@ LLM_NAME = "LFM3 1.7B"
 PERSONA_SYSTEM = """You read how one person comes across in a voice call between friends playing a game, using only things they said. This is an impression of how they talk with others, not a medical or psychological diagnosis.
 
 Rate each item from their lines. If the lines don't show something, give it a low score. Do not invent; base every rating and note on what they actually said, and quote short bits.
+Call them only by the name you are given. Other names that come up in their lines belong to other people they are talking to or about, never to them.
 
 Big Five, each 1 to 5 (3 is average):
 - O openness: curious, imaginative vs. plain, routine
@@ -1366,18 +1367,18 @@ Interpersonal signals, each 0 to 3 (0 none, 1 a little, 2 clear, 3 strong):
 - impulsiveness: reactive, volatile, blurts things out, can't wait
 - warmth: notices others, supportive, includes people, kind
 
-Reply with exactly these lines, a number then a short reason from their words, and nothing else:
+Reply with exactly these lines, a number then a short reason from their words (at most 12 words, no second thoughts), and nothing else:
 SUMMARY: <one sentence on how they come across>
-O: <1-5> <reason>
-C: <1-5> <reason>
-E: <1-5> <reason>
-A: <1-5> <reason>
-S: <1-5> <reason>
 self-focus: <0-3> <evidence>
 antagonism: <0-3> <evidence>
 manipulation: <0-3> <evidence>
 impulsiveness: <0-3> <evidence>
 warmth: <0-3> <evidence>
+O: <1-5> <reason>
+C: <1-5> <reason>
+E: <1-5> <reason>
+A: <1-5> <reason>
+S: <1-5> <reason>
 QUOTE: <a short quote>
 QUOTE: <a short quote>"""
 
@@ -1431,6 +1432,7 @@ def persona_build(raw: str) -> dict:
     (and a plain-text version for Copy and as a fallback). Signals are ranked in
     code, so the order never depends on the small model."""
     summary, big5, signals, quotes = _persona_parse(raw)
+    summary = re.sub(r"\s+\([^()]{1,40}\)(?=\s+(?:is|comes|seems|sounds|was)\b)", "", summary, count=1)   # "Jo(h)n (Gator) comes across" -> "Jo(h)n comes across"
     if not big5 and not signals:
         return {"text": (raw or "").strip()[:1500], "data": None}   # unparseable: show what came back
 
@@ -1445,10 +1447,10 @@ def persona_build(raw: str) -> dict:
 
     labels = dict(PERSONA_SIGNALS)
     # every signal in the graphic (self-focus/narcissism always visible), strongest first
-    sig = [{"key": k, "label": labels[k], "score": signals.get(k, (0, ""))[0],
+    sig = [{"key": k, "label": labels[k], "score": signals[k][0] if k in signals else None,
             "note": _persona_clean(signals.get(k, (0, ""))[1]), "good": k == "warmth"}
-           for k, _ in PERSONA_SIGNALS]
-    sig.sort(key=lambda s: (s["good"], -s["score"]))      # warmth last; otherwise strongest first
+           for k, _ in PERSONA_SIGNALS]                     # (a signal the model didn't rate is None: "not rated")
+    sig.sort(key=lambda s: (s["good"], s["score"] is None, -(s["score"] or 0)))   # warmth last; otherwise strongest first
     big = [{"key": k, "label": lbl, "score": big5[k][0], "note": _persona_clean(big5[k][1])}
            for k, lbl in PERSONA_BIG5 if k in big5]
     data = {"summary": summary, "traits": traits, "signals": sig, "big5": big, "quotes": quotes[:3]}
@@ -1458,15 +1460,17 @@ def persona_build(raw: str) -> dict:
         out.append(f"**In a sentence:** {summary}")
     if traits:
         out.append(f"**Comes across as:** {', '.join(traits)}")
-    shown = [s for s in sig if s["key"] == "self-focus" or s["score"] >= 1]
+    shown = [s for s in sig if s["key"] == "self-focus" or (s["score"] or 0) >= 1]
     if shown:
         out.append("**Signals (0 = none, 3 = strong):**")
         for s in shown:
+            if s["score"] is None:
+                out.append(f"- {s['label']}: not rated"); continue
             bar = "●" * s["score"] + "○" * (3 - s["score"])
-            out.append(f"- {s['label']}: {bar} {s['score']}/3{(' — ' + s['note']) if s['note'] else ''}")
+            out.append(f"- {s['label']}: {bar} {s['score']}/3{(': ' + s['note']) if s['note'] else ''}")
     if big:
         out.append("**Big Five (1-5):**")
-        out.extend(f"- {x['label']}: {x['score']}/5{(' — ' + x['note']) if x['note'] else ''}" for x in big)
+        out.extend(f"- {x['label']}: {x['score']}/5{(': ' + x['note']) if x['note'] else ''}" for x in big)
     if quotes:
         out.append("**In their words:**")
         out.extend(f'- "{q}"' for q in quotes[:3])
@@ -1627,7 +1631,7 @@ class PersonalityReader:
                 with self.lock:
                     self._load(eng)
                     job["status"] = "thinking"
-                    raw = self.think_then_answer(messages, think_tokens=420, answer_tokens=600)
+                    raw = self.think_then_answer(messages, prefix="SUMMARY:", think_tokens=420, answer_tokens=800)
                     self.last_used = time.time()
                 built = persona_build(raw)
                 job.update(status="done", text=built["text"], data=built["data"], seconds=round(time.time() - job["started"], 1))
