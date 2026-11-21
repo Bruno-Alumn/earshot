@@ -6,7 +6,7 @@ from pathlib import Path
 sys.argv = ["x"]; sys.path.insert(0, ".")
 import server as S
 tmp = Path(tempfile.mkdtemp()); S.TRANSCRIPTS = tmp
-hub = types.SimpleNamespace(people={}, busy_t0=None, publish=lambda m: None)
+hub = types.SimpleNamespace(people={}, busy_t0=None, publish=lambda m: None, people_dirty=set(), username_of=lambda uid: None)
 w = S.Writer(hub); w.q = queue.Queue()
 t0 = time.time() * 1000
 # A started talking at t0 (20 s sentence, still being transcribed); B replied at t0+5 s and finished first.

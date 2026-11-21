@@ -155,7 +155,9 @@ def check_server_hooks():
     S.TRANSCRIPTS = tmp
     class Hub:
         people, busy_t0, refine_q = {}, None, ()
+        people_dirty = set()
         def publish(self, msg): pass
+        def username_of(self, uid): return None
     hub = Hub()
     w = S.Writer(hub)
     t = time.time() * 1000

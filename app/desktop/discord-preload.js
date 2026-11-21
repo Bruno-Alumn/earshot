@@ -17,6 +17,7 @@ const setEnabled = (on) => { enabled = on; window.postMessage({ __dtControl: tru
 ipcRenderer.on('ct:status', (_e, on) => setEnabled(!!on));
 ipcRenderer.on('ct:names-init', (_e, names) => { if (names) window.postMessage({ __dtNamesInit: names }, location.origin); });
 ipcRenderer.on('ct:want-directory', () => window.postMessage({ __dtControl: true, directory: true }, location.origin));
+ipcRenderer.on('ct:watch-channels', (_e, ids) => window.postMessage({ __dtControl: true, watch: Array.isArray(ids) ? ids : [] }, location.origin));
 setInterval(() => setEnabled(enabled), 2000);          // a hook that loaded late still gets the state
 ipcRenderer.send('ct:hello');
 

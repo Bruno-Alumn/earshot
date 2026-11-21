@@ -30,3 +30,5 @@ plugins/*
 settings.json
 .claude/
 merges.json
+people.json
+people/

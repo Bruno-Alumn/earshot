@@ -7,7 +7,7 @@
 // chunks tagged with the user id + display name to content.js.
 (() => {
   if (window.__dtHook) return;
-  window.__dtHook = { version: 12, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
+  window.__dtHook = { version: 13, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
   const H = window.__dtHook;
   // Discord's end-to-end voice encryption logs this when it can't decrypt a
   // frame. A burst of them while every track is silent means the call audio is
@@ -141,6 +141,27 @@
       return ids.filter((id) => typeof id === 'string' && /^\d{15,22}$/.test(id) && id !== me);
     } catch (e) { H.storeDiag.presErr = String(e).slice(0, 80); return null; }
   }
+  // Channels the app wants occupancy for (the ones flagged for auto-join).
+  let watchIds = [];
+  // How many people are in a channel right now, and its user limit (0 = none).
+  // Count real people only — not this account itself. Used to decide whether an
+  // open channel is worth auto-joining and whether it still has a free slot.
+  function channelOcc(id) {
+    const st = findStores();
+    let count = 0, limit = 0;
+    try {
+      const me = st?.user?.getCurrentUser?.()?.id;
+      const vs = st?.voice?.getVoiceStatesForChannel?.(id);
+      if (vs) {
+        const ids = vs instanceof Map ? [...vs.keys()] : Array.isArray(vs) ? vs.map((v) => v?.userId) : Object.keys(vs);
+        count = ids.filter((u) => typeof u === 'string' && /^\d{15,22}$/.test(u) && u !== me).length;
+      }
+      const ch = st?.channels?.getChannel?.(id);
+      const l = ch?.userLimit ?? ch?.user_limit;
+      if (typeof l === 'number' && l > 0) limit = l;
+    } catch (e) { H.storeDiag.occErr = String(e).slice(0, 80); }
+    return { id, count, limit };
+  }
   function meInfo() {
     const st = findStores(); if (!st) return null;
     try {
@@ -220,6 +241,29 @@
     H.nameVia = Object.assign(H.nameVia || {}, via);
     H.unnamedRows = unnamedRows;
   }
+  // Who each person is on Discord: username (the unique handle), display name and
+  // server nickname, for everyone in the call or heard. The server keeps a record of
+  // every name a person has used, tied to their account id, which never changes.
+  const accounts = new Map();          // id -> { u, g, n, at }
+  function accountOf(id) {
+    const st = findStores(); if (!st) return null;
+    try {
+      const u = st.user.getUser(id); if (!u?.username) return null;
+      const g = voiceGuild(st, id);
+      let nick = null; try { nick = g ? st.member?.getNick?.(g, id) : null; } catch {}
+      return { u: String(u.username), g: clean(u.globalName || u.global_name) || null, n: clean(nick) || null };
+    } catch { return null; }
+  }
+  setInterval(() => {
+    const ids = new Set([...(inChannelIds() || []), ...[...readers.values()].map((r) => r.userId).filter(Boolean)]);
+    for (const id of ids) {
+      const old = accounts.get(id);
+      if (old && Date.now() - old.at < 60000) continue;           // look each person up again once a minute
+      const a = accountOf(id);
+      if (a) accounts.set(id, { ...a, at: Date.now() });
+    }
+    H.accounts = Object.fromEntries([...accounts].map(([id, a]) => [id, { u: a.u, g: a.g, n: a.n }]));
+  }, 3000);
   let lastSaved = '';
   setInterval(() => {
     const js = JSON.stringify(Object.fromEntries(idName));
@@ -421,9 +465,10 @@
       v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
-      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia,
+      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia, accounts: H.accounts || {},
       badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
+      occ: watchIds.length ? watchIds.map(channelOcc) : undefined,
       unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),
     } }, location.origin);
   }, 5000);
@@ -432,5 +477,6 @@
     if (e.source !== window || !e.data?.__dtControl) return;
     if ('enabled' in e.data) { enabled = !!e.data.enabled; H.enabled = enabled; }
     if (e.data.directory) window.postMessage({ __dtDirectory: directory() }, location.origin);
+    if (Array.isArray(e.data.watch)) watchIds = e.data.watch.filter((x) => typeof x === 'string').slice(0, 50);
   });
 })();

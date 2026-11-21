@@ -12,6 +12,8 @@ contextBridge.exposeInMainWorld('ctApp', {
   // accounts (several Discord accounts, one window each)
   accounts: () => ipcRenderer.invoke('ct:accounts'),
   transcribe: (guildId, channelId) => ipcRenderer.invoke('ct:transcribe', String(guildId), String(channelId)),
+  channelFlags: () => ipcRenderer.invoke('ct:channel-flags'),
+  setChannelFlag: (id, key, on) => ipcRenderer.invoke('ct:set-channel-flag', String(id), String(key), !!on),
   addAccount: () => ipcRenderer.invoke('ct:add-account'),
   removeAccount: (id) => ipcRenderer.invoke('ct:remove-account', String(id)),
   setRole: (id, role) => ipcRenderer.invoke('ct:set-role', String(id), String(role)),

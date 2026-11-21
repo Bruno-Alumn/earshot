@@ -54,6 +54,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 - Give any account its own proxy (HTTP, HTTPS, SOCKS4 or SOCKS5, with or without a username and password), so several accounts can sign in from different networks at once. Webshare's proxy list lines work as they come.
 - Listener accounts get a silent microphone and start with their sound off, and are still transcribed.
 - **Transcribe a channel** sends the next free account to any channel you pick; you click Join.
+- **Auto-join** (off by default) lets a free account join channels you flag as it finds them open and not full — favourites first — and move on after a few quiet minutes. Flag channels with the blue and star icons under **Channels**. Discord's terms forbid automating accounts, so it is yours to turn on and judge.
 - Share a clean compact view of the call into the call itself when you screen share.
 
 **On your computer only**
@@ -98,7 +99,7 @@ With an NVIDIA graphics card the PC uses it for the most accurate model; without
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd> | Turns the call's sound off for you, while it keeps being transcribed |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every call |
 | Layout button in the header | Customize: drag, size and hide panels, and change the columns |
-| <kbd>⌘</kbd><kbd>,</kbd> | Opens Settings: start at login, sentence splitting, speech detection, language, personality reads, updates |
+| <kbd>⌘</kbd><kbd>,</kbd> | Opens Settings: start at login, auto-join, sentence splitting, speech detection, language, personality reads, updates |
 | **Read** next to a name in Talk time | Writes a personality read of that person |
 
 On a PC, use <kbd>Ctrl</kbd> in place of <kbd>⌘</kbd>. Accounts and the speech model are also under the status buttons at the top of the dashboard.
@@ -246,6 +247,7 @@ cd ../app/desktop && npm ci && npx electron .
 
 - `node test/app-test.js <dir>`: the real app against a fake call with four speakers.
 - `node test/multi-test.js <dir>`: two accounts in separate calls, two in the same call, and Transcribe a channel.
+- `node test/autojoin-test.js` and `node test/autojoin-app-test.js <dir>`: auto-join picks the right open, non-full, flagged channel (unit, then the real app).
 - `node test/proxy-app-test.js <dir>`: per-account proxies (a Webshare list line, SOCKS5, changing and removing it).
 - `node test/proxy-test.js`: the proxy formats accepted per account (no app needed).
 - `cd server && uv run python ../test/timing_test.py`: lines split at the right times.

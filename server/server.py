@@ -283,6 +283,11 @@ class Writer:
         when = dt.datetime.fromtimestamp(t_ms / 1000)
         md, jl = self._paths(when)
         rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
+        un = self.hub.username_of(uid)
+        if un:
+            rec["username"] = un         # their Discord username: the same whatever name they show
+        if uid:
+            self.hub.people_dirty.add(uid)
         if bg:
             rec["bg"] = True             # not the person's own voice (a video, someone in their room)
         with self.lock:
@@ -312,7 +317,7 @@ class Writer:
         for i, (t_ms, end_ms, text) in enumerate(parts):
             rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(max(end_ms, t_ms + 300)), "user": base["user"],
                    "speaker": base["speaker"], "text": text, "refined": True}
-            for k in ("ch", "chName", "guild", "guildName", "bg"):   # the 2B rewrite keeps the background flag
+            for k in ("ch", "chName", "guild", "guildName", "bg", "username"):   # the 2B rewrite keeps the background flag
                 if k in base:
                     rec[k] = base[k]
             new.append(rec)
@@ -694,6 +699,101 @@ def parse_parts(raw: str) -> list | None:
     return out or None
 
 
+# ---------------------------------------------------------------- people
+# Everyone ever heard, by their Discord id (it never changes, unlike display
+# names). people.json holds the usernames and names each id has used; every
+# person with a known username also gets people/<username>.md with all their lines.
+def safe_file_name(name: str) -> str:
+    return re.sub(r"[^\w.-]+", "_", name).strip("._")[:60] or "person"
+
+
+def person_lines(uid: str) -> list[dict]:
+    out = []
+    for d in sorted(all_days()):
+        recs, calls = day_data(d)
+        for r in recs:
+            if r.get("user") == uid and not r.get("bg") and r.get("text"):
+                call = next((c for c in calls if c["start"] <= r["t"] <= c["end"]), None)
+                out.append({"day": d, "t": r["t"], "end": r.get("end", r["t"]), "text": r["text"], "speaker": r.get("speaker"),
+                            "chName": r.get("chName") or (call or {}).get("chName"), "guildName": r.get("guildName") or (call or {}).get("guildName"),
+                            "call": call and call["id"]})
+    return out
+
+
+_people_cache: tuple | None = None
+
+
+def people_summary(hub) -> list[dict]:
+    """Everyone with at least one line: id, username, every name used, counts, first and last time."""
+    global _people_cache
+    days = all_days()
+    stamp = (tuple((d, day_data(d)[0].__len__()) for d in days), len(hub.people_dir))
+    if _people_cache and _people_cache[0] == stamp:
+        return _people_cache[1]
+    agg: dict = {}
+    for d in days:
+        for r in day_data(d)[0]:
+            uid = r.get("user")
+            if not uid or r.get("bg") or not r.get("text") or not re.fullmatch(r"\d{15,22}", uid):
+                continue
+            a = agg.setdefault(uid, {"id": uid, "lines": 0, "words": 0, "first": r["t"], "last": r["t"], "spoke": {}})
+            a["lines"] += 1; a["words"] += len(r["text"].split())
+            a["first"] = min(a["first"], r["t"]); a["last"] = max(a["last"], r["t"])
+            if r.get("speaker") and not re.fullmatch(r"user-\d{4}", r["speaker"]):
+                a["spoke"][r["speaker"]] = max(a["spoke"].get(r["speaker"], 0), r["t"])
+    out = []
+    for uid, a in agg.items():
+        p = hub.people_dir.get(uid) or {}
+        shown = sorted(a.pop("spoke").items(), key=lambda kv: -kv[1])
+        out.append({**a, "username": p.get("username"), "usernames": p.get("usernames", []),
+                    "names": list(dict.fromkeys([n for n, _ in shown] + p.get("names", []) + p.get("nicks", []))),
+                    "display": (p.get("names") or [None])[-1], "nick": (p.get("nicks") or [None])[-1],
+                    "name": shown[0][0] if shown else (p.get("names") or [uid])[0]})
+    out.sort(key=lambda x: -x["last"])
+    _people_cache = (stamp, out)
+    return out
+
+
+def person_markdown(hub, uid: str) -> str:
+    p = hub.people_dir.get(uid) or {}
+    lines = person_lines(uid)
+    names = list(dict.fromkeys([r["speaker"] for r in reversed(lines) if r.get("speaker")] + p.get("names", []) + p.get("nicks", [])))
+    title = p.get("username") and "@" + p["username"] or (names[0] if names else uid)
+    head = [f"# {title}", "", f"Discord id: {uid}"]
+    if p.get("usernames"):
+        head.append("Usernames: " + ", ".join("@" + u for u in p["usernames"]))
+    if names:
+        head.append("Names shown: " + ", ".join(names))
+    head.append(f"Lines: {len(lines)}")
+    body, last_key = [], None
+    for r in lines:
+        key = (r["day"], r.get("call"))
+        if key != last_key:
+            where = " · ".join(x for x in (r.get("chName"), r.get("guildName")) if x)
+            body += ["", f"## {r['day']}" + (f" · {where}" if where else "")]
+            last_key = key
+        when = dt.datetime.fromtimestamp(r["t"] / 1000).strftime("%H:%M:%S")
+        body.append(f"- {when} **{r.get('speaker') or title}:** {r['text']}")
+    return "\n".join(head + body) + "\n"
+
+
+def write_people_files(hub, uids) -> int:
+    folder = TRANSCRIPTS.parent / "people"
+    n = 0
+    for uid in list(uids):
+        un = hub.username_of(uid)
+        if not un:
+            continue
+        try:
+            folder.mkdir(exist_ok=True)
+            f = folder / f"{safe_file_name(un)}.md"
+            tmp = f.with_suffix(".md.tmp"); tmp.write_text(person_markdown(hub, uid), encoding="utf-8"); tmp.replace(f)
+            n += 1
+        except OSError as e:
+            print("people file:", e, flush=True)
+    return n
+
+
 def all_days() -> list[str]:
     return sorted({f.stem for f in TRANSCRIPTS.glob("*.md")} | {f.stem for f in TRANSCRIPTS.glob("*.jsonl")}, reverse=True)
 
@@ -809,11 +909,45 @@ class Hub:
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
         self.people: dict[str, "Segmenter"] = {}
         self.queue: queue.Queue | None = None
+        self.load_people()
         self.names_file = TRANSCRIPTS.parent / "names.json"
         try:
             self.names: dict[str, str] = json.loads(self.names_file.read_text(encoding="utf-8"))
         except Exception:
             self.names = {}
+
+    # ---- people: everyone's Discord account, with every name they have used
+    def load_people(self):
+        self.people_file = TRANSCRIPTS.parent / "people.json"
+        self.people_dirty: set = set()
+        try:
+            self.people_dir: dict = json.loads(self.people_file.read_text(encoding="utf-8"))
+        except Exception:
+            self.people_dir = {}
+
+    def username_of(self, uid: str) -> str | None:
+        return (self.people_dir.get(uid) or {}).get("username") if uid else None
+
+    def learn_account(self, uid: str, a: dict):
+        """{u: username, g: display name, n: server nickname} for a Discord id."""
+        if not uid or not re.fullmatch(r"\d{15,22}", uid) or not isinstance(a, dict) or not a.get("u"):
+            return
+        p = self.people_dir.setdefault(uid, {"username": None, "usernames": [], "names": [], "nicks": [], "first": None})
+        now = int(time.time() * 1000)
+        changed = p.get("username") != a["u"]
+        p["username"] = a["u"]
+        for key, val in (("usernames", a["u"]), ("names", a.get("g")), ("nicks", a.get("n"))):
+            if val and val not in p[key]:
+                p[key].append(str(val)[:80]); changed = True
+        p["first"] = p.get("first") or now
+        if changed:
+            self.people_dirty.add(uid)
+            try:
+                tmp = self.people_file.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(self.people_dir, ensure_ascii=False, indent=1), encoding="utf-8")
+                tmp.replace(self.people_file)
+            except OSError:
+                pass
 
     def learn_name(self, uid: str, name: str):
         """Remember the real name behind a Discord id (relabels old user-1234 lines)."""
@@ -1150,9 +1284,10 @@ def save_settings(**kw):
 
 
 # Settings the dashboard can change (stored with the model choice in settings.json).
-SETTING_DEFAULTS = {"splitLines": True, "personality": True, "qaLinks": True, "autoUpdate": True, "sensitivity": "normal", "language": "en",
+SETTING_DEFAULTS = {"splitLines": True, "personality": True, "qaLinks": True, "nameStyle": "nick", "autoUpdate": True, "sensitivity": "normal", "language": "en",
                     "background": "dim", "vocabulary": "", "boost": "normal"}
-SETTING_CHOICES = {"sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
+SETTING_CHOICES = {"nameStyle": ["nick", "display", "username"],   # how people are named: server nickname, display name, username
+                   "sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
                    "boost": ["off", "low", "normal", "high"],     # how hard the models lean towards listed words
                    "language": ["en"]}      # Earshot transcribes English only: every model is held to it
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
@@ -1358,8 +1493,25 @@ class PersonalityReader:
         self.cache: dict[tuple, tuple[int, str]] = {}    # (day, call start, ch, who) -> (words, job id)
         threading.Thread(target=self._idle_unload, daemon=True).start()
 
+    _engine_lock = threading.Lock()
+    _engine_ok: tuple | None = None
+
+    @classmethod
+    def engine_here(cls) -> tuple[str | None, str]:
+        # One check at a time, remembered once it works: two threads importing the
+        # library at once could see it half-loaded and wrongly report it missing.
+        if cls._engine_ok:
+            return cls._engine_ok
+        with cls._engine_lock:
+            if cls._engine_ok:
+                return cls._engine_ok
+            res = cls._find_engine()
+            if res[0]:
+                cls._engine_ok = res
+            return res
+
     @staticmethod
-    def engine_here() -> tuple[str | None, str]:
+    def _find_engine() -> tuple[str | None, str]:
         import platform
         if sys.platform == "darwin" and platform.machine() == "arm64":
             try:
@@ -2676,6 +2828,15 @@ async def main():
     writer = Writer(hub)
     writer.q = q
     updater = Updater(hub)
+    def people_files_loop():
+        """Keep people/<username>.md current for everyone who spoke (every 30 s)."""
+        write_people_files(hub, list(hub.people_dir))          # everyone known, once at start
+        while True:
+            time.sleep(30)
+            dirty, hub.people_dirty = hub.people_dirty, set()
+            if dirty:
+                write_people_files(hub, dirty)
+    threading.Thread(target=people_files_loop, daemon=True).start()
     persona = PersonalityReader()
     qa_judge = QAJudge(persona)
     threading.Thread(target=updater.loop, daemon=True).start()
@@ -2712,6 +2873,18 @@ async def main():
             return respond(hub.state())
         if path == "/api/names":
             return respond(hub.names)
+        if path == "/api/people":
+            return respond(people_summary(hub))
+        if path == "/api/person":
+            from urllib.parse import unquote_plus
+            uid = unquote_plus(params.get("id", ""))
+            if not re.fullmatch(r"\d{15,22}", uid):
+                return respond({"error": "bad request"}, status=400)
+            if params.get("format") == "md":
+                return respond(person_markdown(hub, uid), ctype="text/markdown; charset=utf-8")
+            p = hub.people_dir.get(uid) or {}
+            return respond({"id": uid, "username": p.get("username"), "usernames": p.get("usernames", []),
+                            "names": p.get("names", []), "nicks": p.get("nicks", []), "lines": person_lines(uid)})
         if path == "/api/calls":
             arch = archived_keys()
             calls = []
@@ -2938,6 +3111,8 @@ async def main():
                     await reelect()
                 elif ev["type"] == "hook-status":
                     hub.ext_reports[ws] = ({**ev["s"], "paused": ev.get("paused")}, time.time())
+                    for uid, acc in (ev["s"].get("accounts") or {}).items():
+                        hub.learn_account(uid, acc)
                     if ev["s"].get("role") in ("main", "listener"):
                         conn["role"] = ev["s"]["role"]
                     await reelect()

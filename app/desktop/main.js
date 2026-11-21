@@ -13,6 +13,13 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
+const { candidates, isIdle, connectedChannelId } = require('./autojoin');
+
+// Auto-join: a free account hops into an open, flagged voice channel and moves
+// on after a stretch of silence. Timings are overridable for the test harness.
+const AUTOJOIN_IDLE = Number(process.env.CT_AUTOJOIN_IDLE) || 180;          // seconds of silence before moving on
+const AUTOJOIN_COOLDOWN = Number(process.env.CT_AUTOJOIN_COOLDOWN) || 120000; // ms to avoid a channel we just left or failed to join
+const AUTOJOIN_TICK = Number(process.env.CT_AUTOJOIN_TICK) || 8000;         // how often the controller re-evaluates
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SERVER_DIR = path.join(ROOT, 'server');
@@ -184,6 +191,33 @@ function saveAccounts() {
 }
 const acct = (id) => accounts.find((a) => a.id === id);
 const mainAccount = () => accounts.find((a) => a.role === 'main') || accounts[0];
+
+// Per-channel flags for auto-join, keyed by channel id: { auto, fav }.
+//   auto — a free account may automatically join this channel while it is open
+//          (someone is in it) and not full (the blue icon).
+//   fav  — a favourite; it sorts to the top of the channel list (the yellow star).
+let channelFlags = {};
+const channelsFile = () => path.join(app.getPath('userData'), 'channels.json');
+function loadChannelFlags() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(channelsFile(), 'utf8'));
+    channelFlags = {};
+    for (const [id, f] of Object.entries(raw || {})) if (f && (f.auto || f.fav)) channelFlags[String(id)] = { auto: !!f.auto, fav: !!f.fav };
+  } catch { channelFlags = {}; }
+}
+function saveChannelFlags() {
+  try { fs.writeFileSync(channelsFile(), JSON.stringify(channelFlags)); } catch {}
+}
+function setChannelFlag(id, key, on) {
+  if (key !== 'auto' && key !== 'fav') return channelFlags;
+  const f = channelFlags[id] || { auto: false, fav: false };
+  f[key] = !!on;
+  if (!f.auto && !f.fav) delete channelFlags[id]; else channelFlags[id] = f;
+  saveChannelFlags();
+  for (const a of accounts) sendWatchList(a);   // the hook only reports occupancy for flagged channels
+  broadcast();
+  return channelFlags;
+}
 const R = (id) => { if (!rt.has(id)) rt.set(id, { win: null, ws: null, wsOpen: false, capturing: true, status: null, statusAt: 0 }); return rt.get(id); };
 const winOf = (id) => { const w = rt.get(id)?.win; return w && !w.isDestroyed() ? w : null; };
 const nameOf = (a) => a.label || (a.role === 'main' ? 'Main account' : 'Listener (not signed in)');
@@ -251,7 +285,7 @@ const appState = () => {
 };
 
 // App settings that persist (userData/settings.json).
-const APP_DEFAULTS = { openAtLogin: false, showCallWindowOnStart: true };
+const APP_DEFAULTS = { openAtLogin: false, showCallWindowOnStart: true, autoJoin: false };
 function loadSettings() { try { return JSON.parse(fs.readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); } catch { return {}; } }
 function appSettings() { const s = loadSettings(); return Object.fromEntries(Object.entries(APP_DEFAULTS).map(([k, v]) => [k, k in s ? !!s[k] : v])); }
 function setAppSetting(key, value) {
@@ -353,6 +387,7 @@ ipcMain.on('ct:names', (e, names) => {
   try { fs.writeFileSync(namesFile(), JSON.stringify({ ...loadNames(), ...names })); } catch {}
 });
 setInterval(() => { for (const a of accounts) winOf(a.id)?.webContents.send('ct:want-directory'); }, 10 * 60000);
+setInterval(autoJoinTick, AUTOJOIN_TICK);
 
 // ----------------------------------------------------------------- dashboard bridge
 ipcMain.on('ct:server', (e, action) => {
@@ -391,6 +426,8 @@ ipcMain.handle('ct:add-account', (e) => (fromDash(e) ? addAccount() : null));
 ipcMain.handle('ct:remove-account', (e, id) => (fromDash(e) ? removeAccount(String(id)) : null));
 ipcMain.handle('ct:set-role', (e, id, role) => (fromDash(e) ? setRole(String(id), role === 'main' ? 'main' : 'listener') : null));
 ipcMain.handle('ct:set-proxy', (e, id, value) => (fromDash(e) ? setAccountProxy(String(id), String(value == null ? '' : value)) : null));
+ipcMain.handle('ct:channel-flags', (e) => (fromDash(e) ? channelFlags : null));
+ipcMain.handle('ct:set-channel-flag', (e, id, key, on) => (fromDash(e) ? setChannelFlag(String(id), String(key), !!on) : null));
 
 function setPaused(on) { paused = on; broadcast(); buildMenu(); }
 
@@ -692,8 +729,9 @@ function reloadAccount(a) {       // a role change takes effect in a fresh page 
 }
 
 // "Transcribe a channel": the next free account in that server opens the
-// channel with Join Voice highlighted. You click Join; the app never joins,
-// leaves or mutes for you.
+// channel with Join Voice highlighted and you click Join — this manual flow
+// never joins, leaves or mutes for you. (Auto-join, off by default, is the one
+// place the app joins on its own; see autoJoinTick.)
 function transcribeChannel(guildId, channelId) {
   const inServer = accounts.filter((a) => (a.directory || []).some((g) => g.id === guildId));
   if (!inServer.length) return { error: 'None of your accounts is in that server.' };
@@ -726,6 +764,84 @@ function clearJoinHint(a) {
   if (r.hintCss) w.webContents.removeInsertedCSS(r.hintCss).catch(() => {});
   r.hintCss = null;
   w.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
+}
+
+// ----------------------------------------------------------------- auto-join
+// Tell an account's page which channels to report occupancy for (the flagged
+// ones in its own servers), so the controller can see which are open and full.
+function flaggedChannelIds(a) {
+  const ids = [];
+  for (const g of a.directory || []) for (const c of g.channels || []) if (channelFlags[c.id]?.auto) ids.push(c.id);
+  return ids;
+}
+function sendWatchList(a) {
+  winOf(a.id)?.webContents.send('ct:watch-channels', flaggedChannelIds(a));
+}
+function occOf(status) {
+  const m = {};
+  for (const o of status?.occ || []) if (o && o.id) m[o.id] = { count: o.count | 0, limit: o.limit | 0 };
+  return m;
+}
+// Click the voice-channel's Join button in the page (the same control
+// "Transcribe a channel" highlights). true = a user gesture, so the browser
+// lets the audio context start; without it the capture stays suspended and the
+// channel would look silent for ever.
+const CLICK_JOIN_JS = `(() => { const el = document.querySelector('button[aria-label*="Join Voice" i], button[aria-label*="Join Call" i], [class*="joinButton"], #join'); if (el) { el.click(); return true; } return false; })()`;
+function autoJoinChannel(a, cand) {
+  const r = R(a.id), w = winOf(a.id); if (!w) return;
+  r.autoTarget = cand.channelId; r.autoTargetAt = Date.now(); r.autoJoined = null;
+  const url = discordUrl(a, `/channels/${cand.guildId}/${cand.channelId}`);
+  w.webContents.once('did-finish-load', () => setTimeout(() => {
+    sendWatchList(a);
+    winOf(a.id)?.webContents.executeJavaScript(CLICK_JOIN_JS, true).catch(() => {});
+  }, 2500));
+  w.loadURL(url).catch(() => {});
+  broadcast();
+}
+// Runs on a timer. For each free account, join the best open flagged channel;
+// for a channel we auto-joined that has gone quiet, move on to the next one.
+// Channels joined by hand (or by "Transcribe a channel") are left alone.
+function autoJoinTick() {
+  if (!appSettings().autoJoin || paused) return;
+  const now = Date.now();
+  const connectedNow = new Map();                 // channel id -> which account holds it
+  for (const a of accounts) {
+    const r = rt.get(a.id);
+    if (!r?.status || now - (r.statusAt || 0) > 15000) continue;
+    const ch = connectedChannelId(r.status); if (ch) connectedNow.set(ch, a.id);
+  }
+  for (const a of accounts) {
+    const r = rt.get(a.id), w = winOf(a.id);
+    if (!w || !r || !r.wsOpen || r.capturing === false || r.hint) continue;
+    if (now - (r.statusAt || 0) > 15000 || !r.status) continue;
+    sendWatchList(a);                             // keep the page's watch list current across reloads
+    const status = r.status;
+    const connected = connectedChannelId(status);
+    r.cooldowns = r.cooldowns || {};
+    for (const id of Object.keys(r.cooldowns)) if (r.cooldowns[id] <= now) delete r.cooldowns[id];
+    // Resolve a join we started: confirm it, or give up and cool the channel down.
+    if (r.autoTarget) {
+      if (connected === r.autoTarget) { r.autoJoined = r.autoTarget; r.autoTarget = null; r.autoJoinAt = now; }
+      else if (now - (r.autoTargetAt || 0) > 20000) { r.cooldowns[r.autoTarget] = now + AUTOJOIN_COOLDOWN; r.autoTarget = null; }
+      else continue;                              // still connecting; give it a moment
+    }
+    if (!connected) r.autoJoined = null;
+    const ownChannels = new Set([...connectedNow.keys()].filter((ch) => connectedNow.get(ch) !== a.id));
+    const cands = candidates({ directory: a.directory || [], flags: channelFlags, occ: occOf(status),
+      ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now });
+    if (connected) {
+      if (r.autoJoined === connected && cands.length
+          && isIdle({ status, joinedAt: r.autoJoinAt || 0, now, idleSec: AUTOJOIN_IDLE })) {
+        r.cooldowns[connected] = now + AUTOJOIN_COOLDOWN;   // don't bounce straight back to the quiet one
+        r.autoJoined = null;
+        autoJoinChannel(a, cands[0]);
+        connectedNow.delete(connected); connectedNow.set(cands[0].channelId, a.id);
+      }
+    } else if (cands.length) {
+      autoJoinChannel(a, cands[0]);
+      connectedNow.set(cands[0].channelId, a.id);
+    }
+  }
 }
 
 function openExternal(url) {
@@ -862,6 +978,7 @@ app.on('login', (event, wc, _details, authInfo, callback) => {
 
 app.whenReady().then(async () => {
   accounts = loadAccounts(); saveAccounts();
+  loadChannelFlags();
   for (const a of accounts) await applyProxy(a);    // before any Discord window loads
   buildMenu();
   powerSaveBlocker.start('prevent-app-suspension');        // keep transcribing at full speed in the background

@@ -47,8 +47,11 @@ if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () =>
   window.__fakeChannel = Q.get('ch') || CH_A1;
   const chans = { '700000000000000009': { id: '700000000000000009', name: 'Side room', guild_id: '900000000000000001', type: 2 },
                   '700000000000000001': { id: '700000000000000001', name: 'Voice 4', guild_id: '900000000000000001', type: 2 },
+                  '700000000000000003': { id: '700000000000000003', name: 'Standup', guild_id: '900000000000000001', type: 2, userLimit: 1 },
                   '700000000000000002': { id: '700000000000000002', name: 'Late Night Lounge', guild_id: '900000000000000002' } };
-  class SelC extends Store { getVoiceChannelId() { return window.__fakeChannel; } getChannelId() { return null; } }
+  // getVoiceChannelId returns a channel only once we have actually joined (clicked
+  // Join), so "connected to voice" is meaningful for the auto-join controller.
+  class SelC extends Store { getVoiceChannelId() { return window.__joined ? window.__fakeChannel : null; } getChannelId() { return null; } }
   SelC.displayName = 'SelectedChannelStore';
   class ChanC extends Store { getChannel(id) { return chans[id]; } }
   ChanC.displayName = 'ChannelStore';
@@ -88,6 +91,7 @@ document.getElementById('share').onclick = async () => {
   } catch (e) { window.__share = { status: 'error', error: String(e) }; }
 };
 document.getElementById('join').onclick = () => (async () => {
+  window.__joined = true;
   const ctx = new AudioContext({ sampleRate: 48000 });
   await ctx.resume();
   const load = async (u) => ctx.decodeAudioData(await (await fetch(u)).arrayBuffer());
