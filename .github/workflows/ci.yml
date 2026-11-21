@@ -24,7 +24,7 @@ jobs:
       - name: Auto-join ranking test
         run: node test/autojoin-test.js
       - name: Python
-        run: python3 -m py_compile server/server.py server/voiceprint.py app/windows/call_transcriber.pyw test/server_e2e.py test/vad_test.py test/voiceprint_test.py test/force_english_test.py test/merge_test.py
+        run: python3 -m py_compile server/server.py server/voiceprint.py app/windows/call_transcriber.pyw test/server_e2e.py test/vad_test.py test/voiceprint_test.py test/force_english_test.py test/merge_test.py test/vocab_test.py
 
   test:
     name: Transcription test (${{ matrix.os }})
@@ -67,6 +67,9 @@ jobs:
       - name: Merged calls test (merge, split back, search, delete)
         working-directory: server
         run: uv run python ../test/merge_test.py
+      - name: Words to listen for (respelling, 470M beam search, 2B push)
+        working-directory: server
+        run: uv run python ../test/vocab_test.py
       - name: Transcript order test (spoken order, not transcription order)
         working-directory: server
         run: uv run python ../test/order_test.py

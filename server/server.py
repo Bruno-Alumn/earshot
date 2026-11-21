@@ -47,12 +47,17 @@ FILLER = re.compile(r"(?i)(^|[\s,])(?:um+|uh+|uhm|erm|hmm+|mm+)(?=[\s,.!?]|$)[,]
 
 
 def tidy(text: str) -> str:
-    """Readability pass: drop um/uh fillers, capitalise 'i' and sentence starts."""
+    """Readability pass: drop um/uh fillers, respell listed words, capitalise 'i' and sentence starts."""
     t = FILLER.sub(r"\1", text)
+    v = vocab_now()
+    if v:                                          # listed words: "hot zone" -> "hotzone" (before capitals are fixed)
+        t = v.respell(t)
     t = re.sub(r"\s{2,}", " ", t).strip(" ,")
     t = re.sub(r"\bi\b", "I", t)
     t = re.sub(r"\bi'(m|ll|ve|d)\b", lambda m: "I'" + m.group(1), t)
     t = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), t)
+    if t.count('"') % 2 and re.search(r'[.!?,]"$', t):   # 2B sometimes ends a line with a stray quote mark (not 6'2")
+        t = t[:-1]
     return t
 
 
@@ -1273,14 +1278,17 @@ def load_settings() -> dict:
 
 def save_settings(**kw):
     st = load_settings(); st.update(kw)
-    settings_path().write_text(json.dumps(st, indent=1), encoding="utf-8")
+    tmp = settings_path().with_suffix(".json.tmp")      # write then rename: a read never sees half a file
+    tmp.write_text(json.dumps(st, indent=1), encoding="utf-8")
+    os.replace(tmp, settings_path())
 
 
 # Settings the dashboard can change (stored with the model choice in settings.json).
 SETTING_DEFAULTS = {"splitLines": True, "personality": True, "qaLinks": True, "nameStyle": "nick", "autoUpdate": True, "sensitivity": "normal", "language": "en",
-                    "background": "dim"}
+                    "background": "dim", "vocabulary": "", "boost": "normal"}
 SETTING_CHOICES = {"nameStyle": ["nick", "display", "username"],   # how people are named: server nickname, display name, username
                    "sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
+                   "boost": ["off", "low", "normal", "high"],     # how hard the models lean towards listed words
                    "language": ["en"]}      # Earshot transcribes English only: every model is held to it
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 VAD_SENSITIVITY = {"high": 0.35, "normal": 0.5, "low": 0.65}  # speech probability the VAD must reach (Silero's default is 0.5)
@@ -1334,6 +1342,8 @@ def set_setting(key: str, raw: str) -> dict:
         return {"error": "unknown setting"}
     if isinstance(SETTING_DEFAULTS[key], bool):
         val = raw in ("1", "true", "on")
+    elif key == "vocabulary":                     # free text: words to listen for
+        val = "\n".join(w + (" = " + " / ".join(sd) if sd else "") for w, sd in parse_vocab(raw))
     else:
         val = raw if raw in SETTING_CHOICES.get(key, []) else None
         if val is None:
@@ -1902,6 +1912,269 @@ def looping(ids) -> bool:
     return False
 
 
+# ---------------------------------------------------------------- words to listen for
+# Settings > Words to listen for: names, slang and acronyms the models don't
+# know ("hotzone", "CWIS", "nade"). Three things use the list:
+#  1. Granite 470M decodes with a beam search that gives a bonus to paths
+#     spelling a listed word (the bonus is taken back if the word isn't finished);
+#  2. Granite 2B gets a push towards the rest of a listed word once it has
+#     started writing one. (Its own "Keywords:" prompt finds more of them, but
+#     then it writes no punctuation or capitals at all, which line splitting
+#     and question links need, so it isn't used.);
+#  3. every line is respelled: "hot zone", "E.U.", "Cwis" -> "hotzone", "EU", "CWIS".
+# An entry can say how it sounds: "CWIS = sea whiz / see wiz".
+# Boost strength: bonus in log-probability for a whole word.
+BOOST = {"off": 0.0, "low": 3.0, "normal": 5.0, "high": 8.0}
+VOCAB_MAX = 300
+
+
+def vnorm(s: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def parse_vocab(raw: str) -> list[tuple[str, list[str]]]:
+    """'hotzone, CWIS = sea whiz / see wiz' -> [("hotzone", []), ("CWIS", ["sea whiz", "see wiz"])]"""
+    out = []
+    for entry in re.split(r"[,\n;]", raw or ""):
+        word, _, sounds = entry.partition("=")
+        word = re.sub(r"\s+", " ", word).strip()
+        if not vnorm(word) or len(word) > 40:
+            continue
+        out.append((word, [s.strip() for s in sounds.split("/") if vnorm(s)][:5]))
+        if len(out) >= VOCAB_MAX:
+            break
+    return out
+
+
+class Vocab:
+    def __init__(self, raw: str, boost: str):
+        self.weight = BOOST.get(boost, BOOST["normal"])
+        self.entries = parse_vocab(raw)
+        self.keys = {}                                    # normalised spelling -> how to write it
+        for word, sounds in self.entries:
+            for k in [vnorm(word), *map(vnorm, sounds)]:
+                if len(k) >= 2:
+                    self.keys.setdefault(k, word)
+                    self.keys.setdefault(k + "s", word + "s")      # plurals: "nades"
+        self.minlen, self.maxlen = {}, {}                 # every prefix of a key -> shortest / longest key it starts
+        for k in self.keys:
+            for i in range(1, len(k) + 1):
+                p = k[:i]
+                self.minlen[p] = min(self.minlen.get(p, 99), len(k))
+                self.maxlen[p] = max(self.maxlen.get(p, 0), len(k))
+        # respelling. Ways a listed word gets written: as one word ("Cwis"), spelled
+        # out ("C. W. I. S.", "E U"), split once into two parts of 3+ letters
+        # ("hot zone"), or as its sounds ("sea whiz"). Never across short words,
+        # so "as he" doesn't become "Ashe" and "a lot" doesn't become "Alot".
+        self.rewrites = []
+        for word, sounds in self.entries:
+            k = vnorm(word)
+            if len(k) < 2:
+                continue
+            alts = [re.escape(k)]
+            if len(k) <= 6:
+                alts.append(r"(?:\.\s?|[ \-])".join(map(re.escape, k)) + r"\.?")
+            alts += [re.escape(k[:i]) + r"[ \-]" + re.escape(k[i:]) for i in range(3, len(k) - 2)]
+            alts += [r"[ \-]?".join(re.escape(w) for w in snd.split()) for snd in sounds]
+            alts.sort(key=len, reverse=True)
+            self.rewrites.append((re.compile(r"(?<![A-Za-z0-9])(?P<w>" + "|".join(alts) + r")(?P<pl>s|'s)?(?![A-Za-z0-9])", re.I), word))
+        self.bias_cache = {}                              # Granite 2B pushes, by tokenizer and partial word
+        self.tables = {}                                  # per tokenizer: token text and boost token lists
+
+    def __bool__(self):
+        return bool(self.keys)
+
+    def bonus(self, cand: str) -> float:
+        return self.weight * len(cand) / self.minlen[cand]
+
+    def advance(self, state, s: str):
+        """state = (cand, committed bonus); s = the text a token adds. cand is the
+        listed-word spelling being matched (spaces ignored, so "hot zone" spells
+        hotzone), "" when between words, None in the middle of an unlisted word."""
+        cand, done = state
+        x = vnorm(s)
+        start = s[:1].isspace() or cand == ""
+        if cand:
+            # on through a space only between two parts of 3+ letters ("hot zone"), as respell does
+            if x and (cand + x) in self.minlen and (not s[:1].isspace() or (len(cand) >= 3 and self.maxlen[cand + x] - len(cand) >= 3)):
+                return (cand + x, done)
+            if cand in self.keys and (start or not x):    # the listed word ended: keep its bonus
+                done += self.weight
+            cand = ""
+        if not x:
+            return ("" if s.strip() or start else cand, done)   # punctuation ends a word
+        if start and x in self.minlen:
+            return (x, done)
+        return ("" if s[-1:].isspace() else None, done)
+
+    def score(self, state, final: bool = False) -> float:
+        cand, done = state
+        if cand:
+            if final:
+                return done + (self.weight if cand in self.keys else 0.0)
+            return done + self.bonus(cand)
+        return done
+
+    def table(self, tok, size: int):
+        """Per tokenizer: each token's text (spaces as " ") and which tokens can
+        start or continue a listed word."""
+        key = (id(tok), size)
+        if key in self.tables:
+            return self.tables[key]
+        texts = token_texts(tok, size)
+        norms = [vnorm(t) for t in texts]
+        prefixes = set(self.minlen)
+        starts = np.array([i for i, (t, x) in enumerate(zip(texts, norms)) if x and t[:1].isspace() and x in prefixes], dtype=np.int64)
+        firsts = {}
+        for i, x in enumerate(norms):
+            if x:
+                firsts.setdefault(x[0], []).append(i)
+        cont = {}
+        for p in prefixes:
+            ids = [i for c in {k[len(p)] for k in self.minlen if k.startswith(p) and len(k) > len(p)}
+                   for i in firsts.get(c, []) if (p + norms[i]) in prefixes]
+            cont[p] = np.array(ids, dtype=np.int64)
+        self.tables[key] = (texts, starts, cont)
+        return self.tables[key]
+
+    def respell(self, text: str) -> str:
+        for rx, word in self.rewrites:
+            def fix(m, word=word):
+                pl, got = m.group("pl") or "", m.group("w")
+                # "E.U." keeps its last stop when that ends the sentence (not before "servers" or ",")
+                end = "." if got.endswith(".") and not re.match(r"\s*[a-z,]", m.string[m.end():]) else ""
+                if word != word.lower():
+                    return word + pl + end
+                letters = re.sub(r"[^A-Za-z]", "", got)
+                w = word.upper() if len(letters) > 1 and letters.isupper() else word[:1].upper() + word[1:] if got[:1].isupper() else word
+                return w + pl + end
+            text = rx.sub(fix, text)
+        return text
+
+
+_TOKEN_TEXTS: dict = {}
+
+
+def token_texts(tok, size: int) -> list[str]:
+    """Each token's text with its leading space mark as a real space."""
+    key = (id(tok), size)
+    if key not in _TOKEN_TEXTS:
+        name = getattr(tok, "convert_ids_to_tokens", None) or getattr(tok, "id_to_token")
+        special = set(getattr(tok, "all_special_ids", []) or [])
+        out = []
+        for i in range(size):
+            try:
+                t = name(i) if i not in special else None
+            except Exception:
+                t = None
+            t = "" if t is None or (t.startswith("<") and t.endswith(">")) else str(t)
+            out.append(t.replace("▁", " ").replace("Ġ", " ").replace("Ċ", "\n"))
+        _TOKEN_TEXTS[key] = out
+    return _TOKEN_TEXTS[key]
+
+
+_VOCAB = {"key": None, "v": None}
+
+
+def vocab_now() -> Vocab | None:
+    st = current_settings()
+    key = (st.get("vocabulary") or "", st.get("boost") or "normal")
+    if key != _VOCAB["key"]:
+        _VOCAB["key"], _VOCAB["v"] = key, Vocab(*key)
+    return _VOCAB["v"] if _VOCAB["v"] else None
+
+
+def ctc_boosted(logp: np.ndarray, blank: int, v: Vocab, texts: list[str], starts, cont, beam: int = 10, top: int = 6) -> np.ndarray:
+    """CTC prefix beam search with listed words boosted. logp: [frames, tokens]
+    log-probabilities. Returns per-frame token ids (blank between tokens) for
+    ctc_pieces, so word timing works as with the greedy decode."""
+    T = logp.shape[0]
+    W = v.weight
+    nb = logp.copy(); nb[:, blank] = -np.inf
+    best_nb = nb.max(axis=1)
+    topk = np.argpartition(-nb, top, axis=1)[:, :top] if nb.shape[1] > top else np.tile(np.arange(nb.shape[1]), (T, 1))
+    # beams: prefix (tuple of token ids) -> [pb, pnb, state, align_b, align_nb]: the best path
+    # ending in blank and the best ending in its last token (aligns: tuples of (token, first frame, last frame))
+    beams = {(): [0.0, -np.inf, ("", 0.0), (), ()]}
+    la = np.logaddexp
+    for t in range(T):
+        row = logp[t]
+        nxt = {}
+        def add(prefix, pb, pnb, state, align):
+            e = nxt.get(prefix)
+            if e is None:
+                nxt[prefix] = [pb, pnb, state, align if pb > -np.inf else (), align if pnb > -np.inf else ()]
+                return
+            if pb > e[0]:
+                e[3] = align
+            if pnb > e[1]:
+                e[4] = align
+            e[0] = la(e[0], pb); e[1] = la(e[1], pnb)
+        quiet = best_nb[t] < row[blank] - W - 3          # nothing could win here, even boosted
+        floor = best_nb[t] - W - 3
+        for prefix, (pb, pnb, state, al_b, al_nb) in beams.items():
+            tot = la(pb, pnb)
+            best_al = al_b if pb >= pnb else al_nb
+            add(prefix, tot + row[blank], -np.inf, state, best_al)
+            last = prefix[-1] if prefix else None
+            if last is not None and pnb > -np.inf:      # the same token held over this frame
+                tok_, f0, _ = al_nb[-1]
+                add(prefix, -np.inf, pnb + row[last], state, al_nb[:-1] + ((tok_, f0, t),))
+            if quiet:
+                continue
+            cands = set(topk[t].tolist())
+            cand = state[0]
+            if cand:
+                extra = cont.get(cand)
+                if extra is not None and len(extra):
+                    cands.update(extra[row[extra] > floor].tolist())
+            if cand is not None and len(starts):
+                cands.update(starts[row[starts] > floor].tolist())
+            for c in cands:
+                if c == blank or row[c] == -np.inf:
+                    continue
+                if c == last:                            # a repeat needs a blank in between
+                    p, al = pb + row[c], al_b
+                else:
+                    p, al = tot + row[c], best_al
+                if p == -np.inf:
+                    continue
+                add(prefix + (c,), -np.inf, p, v.advance(state, texts[c]), al + ((c, t, t),))
+        beams = dict(sorted(nxt.items(), key=lambda kv: la(kv[1][0], kv[1][1]) + v.score(kv[1][2]), reverse=True)[:beam])
+    best = max(beams.values(), key=lambda e: la(e[0], e[1]) + v.score(e[2], final=True))
+    best_align = best[3] if best[0] >= best[1] else best[4]
+    ids = np.full(T, blank, dtype=np.int64)
+    for c, f0, f1 in best_align:
+        ids[f0:f1 + 1] = c
+    return ids
+
+
+class VocabBias:
+    """Granite 2B: once the text it has written so far is partway through a
+    listed word, the tokens that continue that word get a push."""
+    def __init__(self, tok):
+        self.tok = tok
+
+    def bias(self, out_ids: list[int], size: int):
+        v = vocab_now()
+        if not v or v.weight <= 0:
+            return None
+        texts, starts, cont = v.table(self.tok, size)
+        state = ("", 0.0)
+        for i in out_ids:
+            state = v.advance(state, texts[i] if i < len(texts) else "")
+        cand = state[0]
+        key = (id(self.tok), size, cand)
+        cache = v.bias_cache
+        if key not in cache:
+            b = np.zeros(size, dtype=np.float32)
+            # (not from one letter towards a two-letter word: "E" + push -> "EU" out of an "eh")
+            if cand and (len(cand) >= 2 or v.minlen[cand] >= 3) and cand in cont and len(cont[cand]):
+                b[cont[cand]] = v.weight * 0.7
+            cache[key] = b if b.any() else None
+        return cache[key]
+
+
 def ctc_pieces(ids, audio_len: int, decode, blank: int) -> list[tuple[str, float, float]]:
     """Greedy CTC frames -> [(text added by this token, start s, end s)]."""
     n = len(ids)
@@ -2129,7 +2402,13 @@ def _load_engine(engine: str, repo: str, language: str | None):
                         m = english_mask(tok, logits.shape[-1]); m[blank] = True
                         mask = mx.array(np.where(m, 0.0, -1e9).astype(np.float32))
                     logits = logits + mask
-                ids = np.array(mx.argmax(logits, axis=-1))
+                v = vocab_now()
+                if v and v.weight > 0:                   # words to listen for: beam search with them boosted
+                    lg = logits.astype(mx.float32)
+                    lp = np.array(lg - mx.logsumexp(lg, axis=-1, keepdims=True))
+                    ids = ctc_boosted(lp, blank, v, *v.table(tok, lp.shape[-1]))
+                else:
+                    ids = np.array(mx.argmax(logits, axis=-1))
                 pieces = ctc_pieces(ids, len(audio), lambda t: tok.decode(t, skip_special_tokens=True), blank)
                 return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
             return run_ctc
@@ -2156,14 +2435,19 @@ def _load_engine(engine: str, repo: str, language: str | None):
                             m[i] = True
                     mask = mx.array(np.where(m, 0.0, -np.inf).astype(np.float32))
                 return logits.astype(mx.float32) + mask
+            vb, plen = VocabBias(tok), [0]
+            def listed_words(tokens, logits):            # words to listen for: a push towards them
+                b = vb.bias(np.array(tokens).reshape(-1)[plen[0]:].tolist(), logits.shape[-1])
+                return logits if b is None else logits + mx.array(b)
             def run_en(audio):
                 feats, n_audio = model._extract_features(model._load_audio(mx.array(audio)))
                 audio_feats = model.get_audio_features(feats)
                 ids = model._build_prompt(n_audio, ask, system_prompt=system)
                 embeds = model._build_inputs_embeds(ids, audio_feats)
+                plen[0] = int(ids.size)
                 out, ended = [], False
                 for t, _ in generate_step(prompt=ids, input_embeddings=embeds.squeeze(0), model=model,
-                                          max_tokens=en_token_cap(len(audio)), logits_processors=[only_english]):
+                                          max_tokens=en_token_cap(len(audio)), logits_processors=[only_english, listed_words]):
                     if t == tok.eos_token_id:
                         ended = True
                         break
@@ -2201,8 +2485,15 @@ def _load_engine(engine: str, repo: str, language: str | None):
                             m = english_mask(tk, logits.shape[-1]); m[blank] = True
                             mask = torch.tensor(np.where(m, 0.0, -1e4), dtype=logits.dtype, device=logits.device)
                         logits = logits + mask
-                ids = logits.argmax(-1).cpu().numpy()
-                pieces = ctc_pieces(ids, len(audio), lambda t: tk.decode(t, skip_special_tokens=True), blank)
+                    v = vocab_now()
+                    if v and v.weight > 0:               # words to listen for: beam search with them boosted
+                        lp = logits.float().log_softmax(-1).cpu().numpy()
+                        ids = ctc_boosted(lp, blank, v, *v.table(tk, lp.shape[-1]))
+                    else:
+                        ids = logits.argmax(-1).cpu().numpy()
+                # (group_tokens=False: this tokenizer's CTC decode would merge "no no no" into "no";
+                # ctc_pieces has already merged the frames that belong to one token)
+                pieces = ctc_pieces(ids, len(audio), lambda t: tk.decode(t, skip_special_tokens=True, group_tokens=False), blank)
                 return {"text": "".join(p[0] for p in pieces).strip(), "pieces": pieces}
             return run
         if "granite-speech" in low:                          # Granite 2B (speech LLM)
@@ -2225,10 +2516,18 @@ def _load_engine(engine: str, repo: str, language: str | None):
                                     m[i] = True
                             self.bad = torch.from_numpy(~m).to(scores.device)
                         return scores.masked_fill(self.bad, -float("inf"))
-                gen["logits_processor"] = LogitsProcessorList([OnlyEnglish()])
+                class ListedWords(LogitsProcessor):          # words to listen for: a push towards them
+                    vb, start = VocabBias(tok), 0
+                    def __call__(self, input_ids, scores):
+                        b = self.vb.bias(input_ids[0, self.start:].tolist(), scores.shape[-1])
+                        return scores if b is None else scores + torch.from_numpy(b).to(scores.device, scores.dtype)
+                listed = ListedWords()
+                gen["logits_processor"] = LogitsProcessorList([OnlyEnglish(), listed])
             def run(audio):
                 with torch.inference_mode():
                     inp = proc(prompt, torch.from_numpy(audio).unsqueeze(0), device=dev, return_tensors="pt").to(dev)
+                    if gen:
+                        gen["logits_processor"][1].start = inp["input_ids"].shape[-1]
                     cap = min(200, en_token_cap(len(audio))) if gen else 200
                     out = model.generate(**inp, max_new_tokens=cap, do_sample=False, num_beams=1, **gen)
                     new = out[0, inp["input_ids"].shape[-1]:].tolist()
