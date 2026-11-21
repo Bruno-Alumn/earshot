@@ -2429,20 +2429,18 @@ function personaGraphic(d) {
     for (const s of d.signals) {
       const fill = s.good ? '#3fb27f' : SIG_COLOR[s.score] || 'var(--accent)';
       h += s.score == null ? `<div class="pb"><div class="pbl">${escc(s.label)}</div><span class="meter none"></span><div class="pbn" title="The model didn't rate this one">not rated</div></div>`
-        : `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`
-        + (s.note ? `<div class="pbnote">${escc(s.note)}</div>` : '');
+        : `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`;
     }
     h += `</div>`;
   }
   if (d.big5?.length) {
     h += `<div class="phead">Big Five <small>1 low · 5 high</small></div><div class="pbars">`;
     for (const x of d.big5) {
-      h += `<div class="pb"><div class="pbl">${escc(x.label)}</div>${meter(x.score, 5, 'var(--accent)')}<div class="pbn">${x.score}/5</div></div>`
-        + (x.note ? `<div class="pbnote">${escc(x.note)}</div>` : '');
+      h += `<div class="pb"><div class="pbl">${escc(x.label)}</div>${meter(x.score, 5, 'var(--accent)')}<div class="pbn">${x.score}/5</div></div>`;
     }
     h += `</div>`;
   }
-  if (d.quotes?.length) h += `<div class="phead">In their words</div><ul class="pquotes">${d.quotes.map((q) => `<li>${escc(q)}</li>`).join('')}</ul>`;
+  // (the model's evidence and quotes stay out: the report is the summary and the meters)
   return h;
 }
 async function personaRead(k) {
