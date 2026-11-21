@@ -3374,7 +3374,7 @@ async def main():
                 if request.headers.get("X-CT") != "1":
                     return respond({"error": "forbidden"}, status=403)
                 res = persona_book.ask(uid, force=params.get("fresh") == "1")
-                return respond(res, status=400 if "error" in res else 200)
+                return respond(res, status=400 if "reads" not in res else 200)   # a view carries "error": None
             return respond(persona_book.view(uid))
         if path == "/api/persona/key":
             # the key comes in a header, never the URL, so it can't end up in a log or history
