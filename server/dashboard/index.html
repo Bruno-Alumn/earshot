@@ -423,6 +423,15 @@ body.compact #feedmeta { display: none; }
 .modal.persona .pnote { color: var(--text-muted); font-size: 11.5px; margin-top: 10px; }
 /* personality report graphic */
 .pbody .psum { font-size: 13.5px; font-weight: 550; color: var(--text-primary); margin: 0 0 8px; }
+.pbody .psum { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pbody .ptiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 8px; }
+.pbody .ptile { border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); padding: 9px 10px 10px; min-width: 0; }
+.pbody .ptl { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.pbody .ptl span { font-size: 12px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pbody .ptl b { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text-primary); line-height: 1.1; }
+.pbody .ptl b small { font-size: 11px; font-weight: 500; color: var(--text-muted); }
+.pbody .pseg { display: flex; gap: 3px; margin-top: 7px; }
+.pbody .pseg i { flex: 1; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--text-muted) 22%, transparent); }
 .pbody .ptraits { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
 .pbody .ptraits span { font-size: 11.5px; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; }
 .pbody .phead { font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; color: var(--text-muted); margin: 14px 0 6px; }
@@ -2421,26 +2430,26 @@ function meter(score, max, fill) {
 }
 function personaGraphic(d) {
   const escc = esc;
+  // one small box per gauge: a short label on one line, the score, and a segmented bar
+  const tile = (label, score, max, color, title) => {
+    const SHORT = { 'Conscientiousness': 'Conscientious', 'Emotional stability': 'Stability' };   // fit one line (full name on hover)
+    const short = SHORT[label] || label.replace(/\s*\(.*\)\s*$/, '');   // "Self-focus (narcissistic style)" -> "Self-focus"
+    const segs = Array.from({ length: max }, (_, i) => `<i style="${score != null && i < score ? `background:${color}` : ''}"></i>`).join('');
+    return `<div class="ptile" title="${escc(title || label)}"><div class="ptl"><span>${escc(short)}</span><b>${score == null ? '–' : score}<small>/${max}</small></b></div><div class="pseg">${segs}</div></div>`;
+  };
   let h = '';
   if (d.summary) h += `<p class="psum">${escc(d.summary)}</p>`;
   if (d.traits?.length) h += `<div class="ptraits">${d.traits.map((t) => `<span>${escc(t)}</span>`).join('')}</div>`;
   if (d.signals?.length) {
-    h += `<div class="phead">Signals <small>0 none · 3 strong</small></div><div class="pbars">`;
-    for (const s of d.signals) {
-      const fill = s.good ? '#3fb27f' : SIG_COLOR[s.score] || 'var(--accent)';
-      h += s.score == null ? `<div class="pb"><div class="pbl">${escc(s.label)}</div><span class="meter none"></span><div class="pbn" title="The model didn't rate this one">not rated</div></div>`
-        : `<div class="pb"><div class="pbl">${escc(s.label)}</div>${meter(s.score, 3, fill)}<div class="pbn">${s.score}/3</div></div>`;
-    }
+    h += `<div class="phead">Signals <small>0 none · 3 strong</small></div><div class="ptiles">`;
+    for (const s of d.signals) h += tile(s.label, s.score, 3, s.good ? '#3fb27f' : SIG_COLOR[s.score] || 'var(--accent)', s.score == null ? s.label + ': not rated' : s.label);
     h += `</div>`;
   }
   if (d.big5?.length) {
-    h += `<div class="phead">Big Five <small>1 low · 5 high</small></div><div class="pbars">`;
-    for (const x of d.big5) {
-      h += `<div class="pb"><div class="pbl">${escc(x.label)}</div>${meter(x.score, 5, 'var(--accent)')}<div class="pbn">${x.score}/5</div></div>`;
-    }
+    h += `<div class="phead">Big Five <small>1 low · 5 high</small></div><div class="ptiles">`;
+    for (const x of d.big5) h += tile(x.label, x.score, 5, 'var(--accent)');
     h += `</div>`;
   }
-  // (the model's evidence and quotes stay out: the report is the summary and the meters)
   return h;
 }
 async function personaRead(k) {
