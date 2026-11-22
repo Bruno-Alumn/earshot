@@ -7,7 +7,7 @@
 // chunks tagged with the user id + display name to content.js.
 (() => {
   if (window.__dtHook) return;
-  window.__dtHook = { version: 13, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
+  window.__dtHook = { version: 14, tracks: 0, chunks: 0, errors: [], loadedAt: document.readyState, pcs: 0, badStreamIds: [] };
   const H = window.__dtHook;
   // Discord's end-to-end voice encryption logs this when it can't decrypt a
   // frame. A burst of them while every track is silent means the call audio is
@@ -254,6 +254,84 @@
       return { u: String(u.username), g: clean(u.globalName || u.global_name) || null, n: clean(nick) || null };
     } catch { return null; }
   }
+  // Who is in voice across every server this account is in, read only from
+  // Discord's in-memory stores (no requests, nothing Discord can see). Built at
+  // most every 15 s, off the 500 ms loop. The server decides which servers to keep.
+  // Shape: { at, ms, guildIds, capped, guilds: [{ id, name, channels: [{ id, name, limit,
+  // people: [{ id, since (ms), mute, deaf, stream, video }] }] }], accounts: { id: { u, g, n } },
+  // watchGuilds: servers of the channels flagged for auto-join }
+  // guildIds lists every server the account is in, so the server can tell "nobody
+  // in voice there" from "can't see that server any more".
+  const lobbyAcc = new Map();          // id -> { u, g, n, at }: looked up at most once a minute
+  function voiceLobby(st, now) {
+    const t0 = performance.now();
+    const all = st.voice?.getAllVoiceStates?.() || {};
+    const guildIds = Object.keys(st.guilds?.getGuilds?.() || {});
+    const guilds = [], accounts = {};
+    let capped = false, total = 0, dropped = 0;   // total: people listed so far (keeps the report small whatever the counts)
+    for (const gid of Object.keys(all)) {
+      const users = all[gid]; if (!users || typeof users !== 'object') continue;
+      if (guilds.length >= 50) { capped = true; break; }
+      let vocal = null;
+      try { vocal = new Set((st.guildChannels?.getChannels?.(gid)?.VOCAL || []).map((x) => (x.channel || x)?.id).filter(Boolean)); } catch {}
+      const byCh = new Map();
+      for (const [uid, s] of Object.entries(users)) {
+        const cid = s?.channelId;
+        if (!cid || !/^\d{15,22}$/.test(uid)) continue;
+        if (!byCh.has(cid)) byCh.set(cid, []);
+        byCh.get(cid).push([uid, s]);
+      }
+      const channels = [];
+      let gCapped = false;
+      for (const [cid, list] of byCh) {
+        let ch = null; try { ch = st.channels?.getChannel?.(cid); } catch {}
+        // Taken to be the channels this account can view: the server's voice list (GuildChannelStore
+        // VOCAL), which should be filtered by permission (not checked live), while the channel store
+        // may also know hidden ones. "Has a name" is used only when that list is missing (and for stages).
+        // dropped counts named voice channels left out by this rule, to check it from status.log.
+        const seen = vocal?.size ? vocal.has(cid) || (ch?.type === 13 && !!ch?.name) : !!ch?.name;
+        if (!seen && ch?.name && (ch.type === 2 || ch.type === 13)) dropped++;
+        if (!seen || (ch && ch.type !== 2 && ch.type !== 13)) continue;     // a channel this account can't see
+        if (channels.length >= 60 || total >= 2000) { capped = gCapped = true; break; }
+        const l = ch?.userLimit ?? ch?.user_limit;
+        const room = Math.min(99, 2000 - total);
+        if (list.length > room) capped = gCapped = true;
+        total += Math.min(list.length, room);
+        const people = list.slice(0, room).map(([uid, s]) => ({
+          // connectedAt is in seconds (checked on live Discord); sent as ms
+          id: uid, since: typeof s.connectedAt === 'number' && s.connectedAt > 0 ? Math.round(s.connectedAt < 1e11 ? s.connectedAt * 1000 : s.connectedAt) : null,
+          mute: !!(s.mute || s.selfMute), deaf: !!(s.deaf || s.selfDeaf), stream: !!s.selfStream, video: !!s.selfVideo }));
+        channels.push({ id: cid, name: clean(ch?.name) || 'Voice', limit: typeof l === 'number' && l > 0 ? l : 0, people });
+        for (const p of people) {
+          const old = lobbyAcc.get(p.id);
+          if (!old || now - old.at > 60000) {
+            try {
+              const u = st.user.getUser(p.id);
+              if (u?.username) {
+                let nick = null; try { nick = st.member?.getNick?.(gid, p.id); } catch {}
+                lobbyAcc.set(p.id, { u: String(u.username), g: clean(u.globalName || u.global_name) || null, n: clean(nick) || null, at: now });
+              }
+            } catch {}
+          }
+          const a = lobbyAcc.get(p.id);
+          if (a) accounts[p.id] = { u: a.u, g: a.g, n: a.n };
+        }
+      }
+      if (channels.length) {
+        let g = null; try { g = st.guilds?.getGuild?.(gid); } catch {}
+        guilds.push({ id: gid, name: clean(g?.name) || 'Server', channels, ...(gCapped ? { capped: true } : {}) });
+      } else if (gCapped) capped = true;
+    }
+    for (const [id, a] of lobbyAcc) if (now - a.at > 600000) lobbyAcc.delete(id);   // people not seen for 10 min
+    const watchGuilds = [...new Set(watchIds.map((id) => { try { return st.channels?.getChannel?.(id)?.guild_id; } catch { return null; } }).filter(Boolean))];
+    return { at: now, ms: +(performance.now() - t0).toFixed(1), guildIds: guildIds.slice(0, 200), capped, dropped, guilds, accounts, watchGuilds };
+  }
+  let lobby = null;
+  setInterval(() => {
+    const st = findStores(); if (!st?.voice) return;
+    try { lobby = voiceLobby(st, Date.now()); } catch (e) { H.storeDiag.lobbyErr = String(e).slice(0, 80); }
+  }, 15000);
+
   setInterval(() => {
     const ids = new Set([...(inChannelIds() || []), ...[...readers.values()].map((r) => r.userId).filter(Boolean)]);
     for (const id of ids) {
@@ -469,6 +547,7 @@
       badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
       occ: watchIds.length ? watchIds.map(channelOcc) : undefined,
+      lobby: lobby || undefined,
       unnamedLive: [...readers.values()].filter((r) => r.userId && !idName.has(r.userId)).map((r) => r.userId),
     } }, location.origin);
   }, 5000);

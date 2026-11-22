@@ -84,6 +84,42 @@ body {
 .chn:hover { background: var(--surface-2); color: var(--text-primary); }
 .chn svg { width: 14px; height: 14px; flex: none; color: var(--text-muted); }
 .chn .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; }
+/* Voice now: who is in the server's voice channels, from Discord's own member list */
+.chn.vnow-h { color: var(--text-muted); font-size: 11.5px; letter-spacing: .02em; }
+.chn.vnow-h .cn { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chn.vnow-h .ct { white-space: nowrap; }
+.vnow { margin: 0 0 6px 18px; display: grid; gap: 2px; }
+.vnow.stale { opacity: .7; }
+.vnote { font-size: 11.5px; color: var(--text-muted); padding: 2px 8px 4px; }
+.vch { padding: 4px 8px 5px; border-radius: 8px; min-width: 0; }
+.vt { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); background: none; border: 0; padding: 0; text-align: left; }
+button.vt { cursor: pointer; border-radius: 6px; }
+button.vt:hover { color: var(--text-primary); }
+.vt svg { width: 13px; height: 13px; flex: none; color: var(--text-muted); }
+.vt .vn { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
+.vt .vc { flex: none; color: var(--text-muted); font-weight: 400; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vt .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; flex: none; }
+.vp { display: flex; flex-wrap: wrap; gap: 1px 8px; padding: 2px 0 0 19px; font-size: 12px; color: var(--text-muted); min-width: 0; }
+.vpn { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button.vpn, .vmore { font: inherit; font-size: 12px; background: none; border: 0; padding: 0; cursor: pointer; border-radius: 4px; text-align: left; }
+button.vpn { color: var(--text-secondary); text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 2px; }
+button.vpn:hover { color: var(--text-primary); text-decoration-color: currentColor; }
+.vmore { color: var(--accent-text); white-space: nowrap; }
+.vmore:hover { text-decoration: underline; }
+.vmore.chs { padding: 3px 8px; }
+/* People detail: time in voice */
+.pd-voice { padding: 12px 0 14px; border-bottom: 1px solid var(--border); }
+.pd-voice .vsum { font-size: 13px; color: var(--text-secondary); margin: 6px 0 0; }
+.pd-voice .vsum b { color: var(--text-primary); font-weight: 600; }
+.pd-voice .vgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 4px 24px; }
+.pd-voice ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12.5px; }
+.pd-voice li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; min-width: 0; }
+.pd-voice li .n { flex: 1 1 9em; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-primary); }
+.pd-voice li button.n { font: inherit; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: var(--accent-text); }
+.pd-voice li button.n:hover { text-decoration: underline; }
+.pd-voice li .k { flex: none; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 12px; }
+.pd-voice li .rec { font-size: 10.5px; border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; color: var(--text-secondary); }
+.pd-voice .hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
 .calls .call { margin-left: 18px; width: calc(100% - 18px); }
 .ctx { position: fixed; z-index: 37; min-width: 190px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0,0,0,.28); padding: 5px; display: none; }
@@ -1826,7 +1862,7 @@ function renderState() {
 // (the 1 s state refresh, the 5 s personalities one), so a box is left alone
 // while a pointer is pressed in it; the next refresh catches up.
 let pressedIn = null;
-addEventListener('pointerdown', (e) => { pressedIn = e.target.closest?.('#now, #pers') || null; }, true);
+addEventListener('pointerdown', (e) => { pressedIn = e.target.closest?.('#now, #pers, #calls') || null; }, true);
 addEventListener('click', () => { pressedIn = null; }, true);   // before the button's own handler, which may re-render
 addEventListener('pointerup', () => setTimeout(() => { pressedIn = null; }), true);   // released elsewhere: no click
 addEventListener('pointercancel', () => { pressedIn = null; }, true);
@@ -1941,6 +1977,7 @@ function popHtml(which) {
     return `<h3>${esc(lt)}</h3>
       ${fix ? `<div class="hint st-fix ${lv}">${esc(fix)}</div>` : ''}
       <h4 class="st-h">Calls</h4>${callRows}
+      ${voiceStatusLine() ? `<h4 class="st-h">Voice channels</h4><div class="hint st-none">${esc(voiceStatusLine())}</div>` : ''}
       ${desk ? `<dl><dt>Discord window</dt><dd>${appState.discordOpen ? 'Open' : 'Hidden, still connected'}</dd>
         <dt>Call audio</dt><dd>${appState.muted ? 'Muted for you, still transcribed' : 'On'}</dd></dl>
         <div class="btns"><button data-desk="discord">Show Discord</button><button data-desk="mute">${appState.muted ? 'Unmute call' : 'Mute call'}</button><button data-desk="pause">${appState.paused || e.paused ? 'Resume' : 'Pause'}</button></div>
@@ -2314,6 +2351,89 @@ function callRow(c, cur, chName) {
           <div class="t3">${parts > 1 ? `<span class="merged" title="Merged from ${parts} calls. Use ⋯ (or right-click) to split them again.">Merged from ${parts} calls</span>` : ''}<span class="t3n">${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} · ${c.words.toLocaleString()} ${c.words === 1 ? 'word' : 'words'}</span></div>
         </button>`;
 }
+// ---- Voice now: who is in each voice channel of the servers Earshot tracks, read from what the
+// main account's Discord already shows (/api/voice). Fetched with the state updates, at most every
+// 10 s. An older server without it (404) or an error: nothing shows, and it asks again later.
+let voiceData = null, voiceAt = 0, voiceBusy = false, voiceSig = '', voiceMissing = false, voiceRedraw = false;
+const voiceOpenCh = new Set();                     // channels showing all their people (this visit only)
+const VOICE_NAMES = 8, VOICE_CHANNELS = 8;
+async function loadVoice(force = false) {
+  if (SHARE || voiceBusy) return;
+  const now = Date.now();
+  if (!force && now - voiceAt < (voiceMissing ? 120000 : 10000)) return;
+  voiceBusy = true; voiceAt = now;
+  let d = null;
+  try {
+    const r = await fetch('/api/voice');
+    voiceMissing = r.status === 404;
+    if (r.ok) { const j = await r.json(); if (j && Array.isArray(j.guilds)) d = j; }
+  } catch {}
+  voiceBusy = false;
+  voiceData = d;
+  const sig = d ? JSON.stringify([d.watch, d.stale, d.source, d.guilds]) : '';
+  if (sig !== voiceSig) { voiceSig = sig; redrawVoice(); }
+  refreshPop();
+}
+// redraw the call list, but never mid-click in it (the next state update catches up)
+function redrawVoice() {
+  if (pressing($('#calls'))) { voiceRedraw = true; return; }
+  voiceRedraw = false; renderCalls();
+}
+const voiceName = (p) => String(p?.name || p?.username || 'Someone');
+const voiceCount = (n, one = 'person', many = 'people') => `${(Number(n) || 0).toLocaleString()} ${n === 1 ? one : many}`;
+// the server groups in the call list are keyed g:<id> or gn:<name>; the voice list by id
+function voiceByKey() {
+  const m = new Map();
+  for (const g of voiceData?.guilds || []) { if (g.id) m.set('g:' + g.id, g); if (g.name && !m.has('gn:' + g.name)) m.set('gn:' + g.name, g); }
+  return m;
+}
+const voiceChans = (g) => (g?.channels || []).filter((c) => (c.count ?? c.people?.length ?? 0) > 0);
+function voiceGroup(g, sk, prefix) {
+  const chans = voiceChans(g);
+  if (!chans.length) return '';
+  const vg = prefix + 'v:' + sk, open = !closedGroups.has(vg);
+  const ppl = chans.reduce((n, c) => n + (c.count ?? c.people?.length ?? 0), 0);
+  let html = `<button class="chn vnow-h${open ? '' : ' closed'}" data-g="${esc(vg)}" aria-expanded="${open}" title="${open ? 'Hide' : 'Show'} who is in voice in ${esc(String(g.name || 'this server'))}"><span class="chev">▾</span><span class="cn">Voice now</span><span class="ct">${voiceCount(chans.length, 'channel', 'channels')} · ${voiceCount(ppl)}</span></button>`;
+  if (!open) return html;
+  const allCh = voiceOpenCh.has('g:' + sk), shown = allCh ? chans : chans.slice(0, VOICE_CHANNELS);
+  html += `<div class="vnow${voiceData.stale ? ' stale' : ''}">`;
+  if (voiceData.stale && voiceData.updatedAt) html += `<div class="vnote">Out of date. Last updated ${esc(ago(voiceData.updatedAt))}.</div>`;
+  for (const c of shown) {
+    const n = c.count ?? c.people?.length ?? 0, people = c.people || [];
+    const live = c.recording ? calls.find((x) => isLiveCall(x) && partsOf(x).some((p) => p.ch && p.ch === c.id)) : null;
+    const head = `${CH_ICON}<span class="vn">${esc(String(c.name || 'Voice channel'))}</span><span class="vc">· ${voiceCount(n)}${+c.limit > 0 ? ' of ' + Number(c.limit) : ''}</span>${c.recording ? '<span class="live" title="Recording now"></span>' : ''}`;
+    html += `<div class="vch">${live ? `<button class="vt" data-vcall="${esc(live.id)}" title="Open the live call in ${esc(String(c.name || 'this channel'))}">${head}</button>` : `<div class="vt"${c.recording ? ' title="Recording now"' : ''}>${head}</div>`}`;
+    const allP = voiceOpenCh.has(c.id), list = allP ? people : people.slice(0, VOICE_NAMES);
+    const names = list.map((p) => {
+      const nm = voiceName(p), own = p.own ? ' (your account)' : '';
+      return !SHARE && p.id && peopleById.has(p.id)
+        ? `<button class="vpn" data-vp="${esc(String(p.id))}" title="Open ${esc(nm)} in People${own}">${esc(nm)}</button>`
+        : `<span class="vpn" title="${esc(nm + own)}">${esc(nm)}</span>`;
+    }).join('');
+    const rest = people.length - list.length;
+    const more = rest > 0 ? `<button class="vmore" data-vmore="${esc(String(c.id))}" aria-label="Show ${rest} more people in ${esc(String(c.name || 'this channel'))}">+${rest} more</button>`
+      : allP && people.length > VOICE_NAMES ? `<button class="vmore" data-vmore="${esc(String(c.id))}">Show fewer</button>` : '';
+    html += names || more ? `<div class="vp">${names}${more}</div></div>` : '</div>';
+  }
+  if (chans.length > VOICE_CHANNELS) html += `<button class="vmore chs" data-vchs="${esc('g:' + sk)}">${allCh ? 'Show fewer channels' : `Show ${chans.length - VOICE_CHANNELS} more channels`}</button>`;
+  return html + '</div>';
+}
+// one line for the status popover: what is being watched, or why nothing is
+function voiceStatusLine() {
+  const d = voiceData;
+  if (!d || SHARE) return '';
+  if (d.watch === 'off') return 'Off. Turn it on in Settings to see who is in voice.';
+  const src = d.source;
+  if (!d.updatedAt) return 'Waiting for the main account\'s Discord window to report who is in voice.';
+  if (d.stale) return `Not updating. Last updated ${ago(d.updatedAt)}. The main account isn't reporting, so its Discord window may be closed or still loading.`;
+  const gs = d.guilds || [];
+  const ch = gs.reduce((n, g) => n + voiceChans(g).length, 0), ppl = gs.reduce((n, g) => n + voiceChans(g).reduce((m, c) => m + (c.count ?? c.people?.length ?? 0), 0), 0);
+  const names = gs.map((g) => g.name || 'a server');
+  const where = !gs.length ? (d.watch === 'all' ? 'your servers' : 'the servers you record') : names.length <= 2 ? names.join(' and ') : `${names.length} servers`;
+  if (!gs.length) return `Watching ${where}: none to watch yet.`;
+  const what = ch ? `${voiceCount(ch, 'channel', 'channels')}, ${voiceCount(ppl)}` : 'nobody in voice';
+  return `Watching ${where}: ${what}${src?.fallback ? `. Read through ${src.label || 'another account'}, because the main account isn't connected` : ''}${gs.some((g) => g.capped) ? '. Some lists are cut short' : ''}.`;
+}
 function tree(list, cur, prefix) {
   const servers = new Map();
   for (const c of list) {
@@ -2325,13 +2445,16 @@ function tree(list, cur, prefix) {
     sv.channels.get(ck).calls.push(c);
   }
   const order = [...servers.entries()].sort((a, b) => (a[0] === 'unknown') - (b[0] === 'unknown'));
+  const vk = !prefix && !SHARE && voiceData ? voiceByKey() : new Map(), vUsed = new Set();
   let html = '';
   for (const [sk, sv] of order) {
+    let vg = vk.get(sk); if (vUsed.has(vg)) vg = null; else if (vg) vUsed.add(vg);
     const g = prefix + sk, sOpen = !closedGroups.has(g);
     html += `<button class="srv${sOpen ? '' : ' closed'}" data-g="${esc(g)}" data-kind="server" data-key="${esc(sk)}" data-label="${esc(sv.name)}" data-arch="${esc(sv.arch || '')}" aria-expanded="${sOpen}"><span class="chev">▾</span>
       <span class="ic${sv.known ? '' : ' none'}">${sv.known ? esc(initialsOf(sv.name)) : '?'}</span><span class="nm">${esc(sv.name)}</span>
       <span class="ct">${sv.n} ${sv.n === 1 ? 'call' : 'calls'}</span></button>`;
     if (!sOpen) continue;
+    if (vg) html += voiceGroup(vg, sk, prefix);
     // two channels with one name (Discord recreates temporary channels) are told apart by when each was first used
     const firstUse = (ch) => Math.min(...ch.calls.map((c) => c.start));
     const twins = (ch) => [...sv.channels.values()].filter((o) => o !== ch && o.name === ch.name);
@@ -2352,20 +2475,40 @@ function tree(list, cur, prefix) {
       }
     }
   }
+  // servers with people in voice but no calls yet (the "All my servers" setting)
+  for (const g of voiceData && !prefix && !SHARE ? voiceData.guilds : []) {
+    if (vUsed.has(g) || !voiceChans(g).length) continue;
+    const sk = 'g:' + g.id, gk = prefix + sk, sOpen = !closedGroups.has(gk), nm = String(g.name || 'Discord server');
+    html += `<button class="srv${sOpen ? '' : ' closed'}" data-g="${esc(gk)}" aria-expanded="${sOpen}"><span class="chev">▾</span>
+      <span class="ic">${esc(initialsOf(nm))}</span><span class="nm">${esc(nm)}</span><span class="ct">No calls</span></button>`;
+    if (sOpen) html += voiceGroup(g, sk, prefix);
+  }
   return html;
 }
 function renderCalls() {
   const box = $('#calls');
   if (hq.length >= 2) return;                      // search results own the list
   const active = calls.filter((c) => !c.archived), archived = calls.filter((c) => c.archived);
-  if (!calls.length) { box.innerHTML = '<div class="empty">No calls yet.<br>Join a voice channel in Discord.</div>'; return; }
   const cur = currentCall();
-  let html = active.length ? tree(active, cur, '') : '<div class="empty" style="padding:16px 8px">No calls (everything is archived)</div>';
+  let html = !calls.length ? '<div class="empty">No calls yet.<br>Join a voice channel in Discord.</div>' + tree([], null, '')
+    : active.length ? tree(active, cur, '') : '<div class="empty" style="padding:16px 8px">No calls (everything is archived)</div>' + tree([], cur, '');
   if (archived.length) {
     html += `<button class="archhead${archOpen ? '' : ' closed'}" id="archhead"><span class="chev">▾</span>Archived<span class="ct" style="margin-left:auto">${archived.length}</span></button>`;
     if (archOpen) html += `<div class="archived-tree">${tree(archived, cur, 'a/')}</div>`;
   }
+  // a rebuild keeps keyboard focus on the same row or name
+  const fe = box.contains(document.activeElement) ? document.activeElement : null;
+  const fk = fe && ['g', 'id', 'fold', 'vp', 'vmore', 'vchs', 'vcall'].find((k) => fe.dataset[k] != null);
+  const fsel = fk ? `[data-${fk}="${CSS.escape(fe.dataset[fk])}"]` : null;
   box.innerHTML = html;
+  if (fsel) box.querySelector(fsel)?.focus({ preventScroll: true });
+  box.querySelectorAll('button.vpn[data-vp]').forEach((el) => el.onclick = () => openPeople(el.dataset.vp));
+  box.querySelectorAll('[data-vcall]').forEach((el) => el.onclick = () => openCall(el.dataset.vcall));
+  box.querySelectorAll('[data-vmore], [data-vchs]').forEach((el) => el.onclick = () => {
+    const k = el.dataset.vmore ?? el.dataset.vchs;
+    if (voiceOpenCh.has(k)) voiceOpenCh.delete(k); else voiceOpenCh.add(k);
+    renderCalls();
+  });
   box.querySelectorAll('.call').forEach((el) => el.onclick = (e) => {
     // ⌘/Ctrl/Shift-click, or any click while picking: choose calls to merge
     if (e.metaKey || e.ctrlKey || e.shiftKey || mergeSel.size) return toggleMergeSel(el.dataset.id);
@@ -2523,6 +2666,7 @@ async function renderPeoplePage(focusId) {
         ${p.names.length > 1 ? `<div class="pd-sub">Also shown as ${esc(p.names.filter((n) => n !== p.name).slice(0, 6).join(', '))}</div>` : ''}</div>
       <div class="pd-act"><button data-a="save">Save their lines as file…</button></div></div>
       ${reads ? '<section class="pd-read" aria-label="Personality read"></section>' : ''}
+      ${!SHARE && /^\d{15,22}$/.test(id) ? '<section class="pd-voice" aria-label="In voice" hidden></section>' : ''}
       <div class="pd-said"><div class="pd-lines-h"><h3>Everything they said</h3><input type="search" id="plq" placeholder="Search their lines" aria-label="Search their lines"></div>
       <div class="plines" tabindex="0" role="group" aria-label="Everything they said. Use the up and down arrows to move through the lines."><div class="pwait"><span class="s"></span>Loading their lines…</div></div></div>`;
     det.querySelector('[data-a="save"]').onclick = async () => {
@@ -2533,6 +2677,7 @@ async function renderPeoplePage(focusId) {
     else peopleReadRepaint = null;
     const d = await fetch('/api/person?id=' + encodeURIComponent(id)).then((r) => r.json()).catch(() => null);
     if (peopleSel !== id || !det.isConnected) return;
+    voiceSection(det.querySelector('.pd-voice'), id, d);
     const all = d?.lines || [], pb = det.querySelector('.plines'), lq = det.querySelector('#plq');
     const mark = (text, ql) => {                                  // match the raw text, then escape each piece
       if (!ql) return esc(text);
@@ -2576,6 +2721,52 @@ async function renderPeoplePage(focusId) {
   };
   drawList();
   if (peopleSel) showPerson(peopleSel); else host.querySelector('#pdetail').innerHTML = '<div class="empty-box">Nobody has spoken yet.</div>';
+}
+
+// People detail, "In voice": time seen in voice channels, who they are there with, recent sessions.
+// From /api/person (its voice key), else /api/voice/person; an older server has neither: the section stays hidden.
+async function voiceSection(sec, id, d) {
+  if (!sec) return;
+  let v = d && typeof d.voice === 'object' ? d.voice : undefined;
+  if (v === undefined) {
+    if (voiceMissing) return;
+    v = await fetch('/api/voice/person?user=' + encodeURIComponent(id)).then((r) => r.ok ? r.json() : null).catch(() => null);
+    if (!sec.isConnected || peopleSel !== id) return;
+  }
+  if (!v || typeof v !== 'object' || v.error) return;
+  let allRecent = false;
+  const when = (t) => fmtDay(t) === fmtDay(Date.now()) ? 'Today' : fmtDay(t);
+  const range = (r) => {
+    const a = fmtHM(r.start), b = r.open ? 'now' : fmtHM(r.end);
+    return `${when(r.start)}, ${a} to ${fmtDay(r.start) === fmtDay(r.end) || r.open ? b : when(r.end) + ' ' + b}`;
+  };
+  const chLabel = (ch, g) => esc(String(ch || 'a voice channel')) + (g ? ` <span class="k">· ${esc(String(g))}</span>` : '');
+  const paint = () => {
+    const recent = Array.isArray(v.recent) ? v.recent : [], withs = Array.isArray(v.with) ? v.with : [];
+    const total = v.totalSec || 0, ls = v.lastSeen;
+    let body;
+    if (!total && !ls && !recent.length) body = '<div class="hint">Not seen in a voice channel yet. Earshot notes who is in the voice channels of the servers it watches, from what Discord shows the main account.</div>';
+    else {
+      const last = ls ? (ls.now ? ` · in <b>${esc(String(ls.chName || 'a voice channel'))}</b>${ls.guildName ? ' (' + esc(String(ls.guildName)) + ')' : ''} now`
+        : ` · last seen in <b>${esc(String(ls.chName || 'a voice channel'))}</b>${ls.guildName ? ' (' + esc(String(ls.guildName)) + ')' : ''} ${esc(ls.at ? ago(ls.at) : '')}`) : '';
+      const sum = `<p class="vsum"><b>${esc(fmtDur(total))}</b> in voice${+v.sessions > 0 ? ` over ${plural(Number(v.sessions), 'session')}` : ''}${last}</p>`;
+      const wl = withs.length ? `<ul>${withs.map((w) => {
+          const nm = String(w.name || 'Someone'), known = w.id && (w.transcripts || peopleById.has(w.id));
+          return `<li>${known ? `<button class="n" data-vw="${esc(String(w.id))}" title="Open ${esc(nm)} in People">${esc(nm)}</button>` : `<span class="n" title="${esc(nm)}">${esc(nm)}</span>`}<span class="k">${esc(fmtDur(Number(w.sec) || 0))}</span></li>`;
+        }).join('')}</ul>`
+        : `<div class="hint">${v.pairsAt == null ? 'Still working this out. It shows a few seconds after the server starts.' : 'Nobody yet.'}</div>`;
+      const shown = allRecent ? recent : recent.slice(0, 6);
+      const rl = recent.length ? `<ul>${shown.map((r) => `<li><span class="n" title="${esc(String(r.chName || 'a voice channel') + (r.guildName ? ' · ' + r.guildName : ''))}">${chLabel(r.chName, r.guildName)}</span><span class="k">${esc(range(r))}</span>${r.recorded ? '<span class="rec" title="Earshot was recording this channel">Recorded</span>' : ''}</li>`).join('')}</ul>
+        ${recent.length > 6 ? `<button class="linkbtn" data-a="vrecent">${allRecent ? 'Show fewer' : `Show all ${recent.length}`}</button>` : ''}` : '<div class="hint">None yet.</div>';
+      body = `${sum}<div class="vgrid"><div><h4 class="sh2">Often in voice with</h4>${wl}</div><div><h4 class="sh2">Recent sessions</h4>${rl}</div></div>`;
+    }
+    sec.innerHTML = `<div class="pd-sec-h"><h3>In voice</h3></div>${body}`;
+    sec.hidden = false;
+    sec.querySelectorAll('[data-vw]').forEach((b) => b.onclick = () => openPeople(b.dataset.vw));
+    const rb = sec.querySelector('[data-a="vrecent"]');
+    if (rb) rb.onclick = () => { allRecent = !allRecent; paint(); sec.querySelector('[data-a="vrecent"]')?.focus(); };
+  };
+  paint();
 }
 
 // ---- merging calls: pick two or more, then Merge (undo with "Split back")
@@ -3028,8 +3219,9 @@ async function renderSettingsPage(keepScroll, keyNote) {
   const app = `
       ${as ? `${tog('app:openAtLogin', 'Open at login', as.openAtLogin, 'Starts transcribing as soon as you sign in to your computer.')}
         ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}
-        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
+        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence, or after a minute alone in any channel. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
       ${inApp ? tog('ui:compact', 'Compact view', compact, 'Everything on one screen.') : ''}
+      ${'voiceWatch' in ss ? sel('voiceWatch', 'Who is in voice', ss.voiceWatch || 'recorded', [['recorded', 'Servers I record'], ['all', 'All my servers'], ['off', 'Off']], 'Lists who is in each voice channel, under Calls and in People. It only reads what Discord already shows the main account.') : ''}
       ${sub('Updates')}
       ${tog('autoUpdate', 'Check for updates automatically', ss.autoUpdate !== false, 'Checks when the app starts and every 6 hours.')}
       <div class="srow"><span><b>Version ${esc(upd?.current || '—')}</b><small>${upd?.available ? `${esc(upd.latest)} is available.` : upd?.checked ? `Last checked ${ago(upd.checked * 1000)}.` : ''}</small></span><button data-a="check">Check for updates</button></div>
@@ -3054,7 +3246,7 @@ async function renderSettingsPage(keepScroll, keyNote) {
         <span class="keyin"><input type="password" data-k="key" aria-label="Claude API key" placeholder="${personaInfo?.claudeKey ? '••••••••  saved' : 'sk-ant-…'}" autocomplete="off" spellcheck="false"><button data-a="savekey" class="primary">Save key</button>${personaInfo?.claudeKey ? '<button data-a="delkey">Remove key</button>' : ''}</span></div>
       ${ss.personality !== false ? '<div class="srow"><span><b>How reads work</b><small>The steps, the codebook and the fixed rules that turn tags into scores.</small></span><button data-a="how">Show how reads work</button></div>' : ''}`;
   const SECS = [
-    ['app', 'App', desk ? 'Login, the call window, updates, plugins, accounts' : 'Updates and plugins', app],
+    ['app', 'App', desk ? 'Login, the call window, voice channels, updates, plugins, accounts' : 'Voice channels, updates and plugins', app],
     ['tx', 'Transcription', 'Speech model, names, words to listen for', tx],
     ['reads', 'Personality reads', 'Who writes them, the API key', reads],
   ];
@@ -3085,6 +3277,7 @@ async function renderSettingsPage(keepScroll, keyNote) {
     if (r.error) { say(r.error); return; }
     await loadServerSettings();
     if (k === 'background' || k === 'nameStyle') { await loadPeople(); renderAll(); renderCalls(); }
+    if (k === 'voiceWatch' || k === 'nameStyle') loadVoice(true);
     if (k === 'vocabulary') { el.value = r.vocabulary; say(r.vocabulary ? `Saved ${r.vocabulary.split('\n').length} words. New lines use them.` : 'Saved. No words listed.'); return; }
     if (k === 'qaLinks') { qaMemo = null; paintQA(); renderTimeline(stats()); if (v) fetchQA(); }
     if (k === 'personaModel') { await loadPersonaInfo(); if (v === 'claude' && !personaInfo?.claudeKey) { say('Saved. Add a Claude API key below; until then LFM3 writes the reads.'); return; } }
@@ -4012,7 +4205,7 @@ function connect() {
   ws.onopen = async () => { backoff = 500; await loadCalls(); showCall(true); loadUpdate(); loadModels(); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'state') { liveState = m; renderState(); if (!calls.length) renderWhere(); emit('state', m); }
+    if (m.type === 'state') { liveState = m; renderState(); loadVoice(); if (voiceRedraw) redrawVoice(); if (!calls.length) renderWhere(); emit('state', m); }
     else if (m.type === 'replace') {
       // the 2B pass rewrote some live lines: swap them in place
       const d = today(), gone = new Set(m.ids || []);
@@ -4061,7 +4254,7 @@ function connect() {
       }
     }
   };
-  ws.onclose = () => { liveState = null; renderState(); setTimeout(connect, backoff = Math.min(backoff * 2, 5000)); };
+  ws.onclose = () => { liveState = null; renderState(); if (voiceData) { voiceData = null; voiceSig = ''; voiceAt = 0; renderCalls(); } setTimeout(connect, backoff = Math.min(backoff * 2, 5000)); };
 }
 setInterval(() => { if (isToday() && lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } }, 5000);
 setInterval(() => renderCalls(), 30000);     // "LIVE" badge & durations age out

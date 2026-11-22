@@ -33,5 +33,7 @@ merges.json
 people.json
 people/
 personas.json
+presence.jsonl
+presence-open.json
 secrets.json
 study.json

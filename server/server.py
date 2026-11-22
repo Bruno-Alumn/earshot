@@ -785,12 +785,21 @@ def person_markdown(hub, uid: str) -> str:
     return "\n".join(head + body) + "\n"
 
 
+def voice_only_ids(hub) -> set:
+    """People known only from a voice channel's member list (flagged "seen": "voice") who have
+    no lines: no people/<name>.md for them, and kept out of personality reads. Someone flagged
+    who has spoken since counts as an ordinary person, even if the flag wasn't cleared."""
+    flagged = {uid for uid, p in list((hub.people_dir if hub else {}).items()) if p.get("seen") == "voice"}   # list(): the event loop adds people meanwhile
+    return flagged - {p["id"] for p in people_summary(hub)} if flagged else set()
+
+
 def write_people_files(hub, uids) -> int:
     folder = TRANSCRIPTS.parent / "people"
     n = 0
+    skip = voice_only_ids(hub)
     for uid in list(uids):
         un = hub.username_of(uid)
-        if not un:
+        if not un or uid in skip:
             continue
         try:
             folder.mkdir(exist_ok=True)
@@ -800,6 +809,530 @@ def write_people_files(hub, uids) -> int:
         except OSError as e:
             print("people file:", e, flush=True)
     return n
+
+
+# ---------------------------------------------------------------- voice presence
+# Who is in which voice channel, across the servers Earshot records, even when
+# none of your accounts is in the call. The main account's Discord page already
+# knows every voice channel's members (Discord keeps them in memory); the hook
+# sends that list ("lobby") with its status report, and nothing is asked of
+# Discord. Stored as stints (one person in one channel, from join to leave), not
+# snapshots. Kept out of personality reads.
+PRESENCE_KEEP_DAYS = 180
+PRESENCE_STALE_MS = 45_000       # the source's report is older than this: stop counting, close stints as "cut"
+PRESENCE_RESUME_MS = 120_000     # back within this after a cut, in the same channel: the same stint goes on
+PRESENCE_PAIRS_EVERY_S = 180     # "in voice with" totals are worked out again at most this often
+PRESENCE_MAX_BACK_MS = 7 * 86_400_000   # Discord's join time is trusted up to this far back
+_presence_n = 0
+
+
+def _presence_id(uid: str, start: int) -> str:
+    global _presence_n
+    _presence_n += 1
+    return f"{start:x}{uid[-4:]}{_presence_n:x}{os.getpid() % 4096:x}"
+
+
+def presence_ok(r) -> bool:
+    return (isinstance(r, dict) and all(isinstance(r.get(k), str) and r.get(k) for k in ("id", "u", "g", "c"))
+            and isinstance(r.get("s"), int) and isinstance(r.get("e"), int))
+
+
+class Presence:
+    """Voice stints from the main account's lobby snapshots.
+    A stint: {id, u, g, gn, c, cn, s, e, cut, own, rec, from}; times in ms.
+    s = start (Discord's join time when it is believable, else when first seen),
+    e = end (last seen while open), cut = we lost sight of them (stale report,
+    disconnect, restart, out of scope), not a real leave."""
+
+    def __init__(self):
+        self.file = TRANSCRIPTS.parent / "presence.jsonl"
+        self.open_file = TRANSCRIPTS.parent / "presence-open.json"
+        self.lock = threading.RLock()
+        self.open: dict[str, dict] = {}          # user id -> their open stint (one channel at a time)
+        self.closed: list[dict] = []
+        self.by_user: dict[str, list] = {}       # user id -> closed stints, oldest first
+        self.guild_at: dict[str, int] = {}       # server id -> last snapshot that covered it (continuity)
+        self.src_token = None                    # which connection the snapshots come from
+        self.source: dict | None = None
+        self.updated = 0                         # ms of the last snapshot used
+        self.last_lobby_at = None
+        self.view: dict | None = None            # the last snapshot, cut to the tracked servers
+        self.mode = "recorded"
+        self.name_ids: set = set()
+        self.pairs: dict[str, dict[str, int]] = {}
+        self.totals: dict[str, list] = {}        # user id -> [seconds, stints]
+        self.pairs_at = 0.0
+        self.own_seen: set = set()               # every id that was one of your accounts (kept out of "in voice with")
+        self.lines = 0                           # lines in presence.jsonl (more than stints: compact it)
+        self._open_dirty = False
+        self._load()
+
+    # ---- storage
+    def _load(self):
+        recs: dict[str, dict] = {}
+        if self.file.exists():
+            for line in self.file.read_text(encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if presence_ok(r):
+                    recs[r["id"]] = r                       # a stint that went on after a cut: the later line wins
+        n_lines = sum(1 for _ in self.file.open(encoding="utf-8")) if self.file.exists() else 0
+        self._set_closed(list(recs.values()))
+        self.lines = n_lines
+        self.prune(force=n_lines != len(self.closed))     # old stints dropped; duplicate lines compacted
+        # Stints still open when the server last stopped: closed where they were last seen.
+        try:
+            saved = json.loads(self.open_file.read_text(encoding="utf-8"))
+            left = saved.get("open") or []
+            self.own_seen = {x for x in saved.get("own") or [] if isinstance(x, str)}
+        except Exception:
+            left = []
+        for r in left:
+            if presence_ok(r):
+                old = recs.get(r["id"])
+                if old is not None:
+                    if old["e"] >= r["e"]:
+                        continue                           # closed after this copy was saved (killed before the next save): keep that
+                    self._unclose(old)                     # resumed after a cut: this newer copy replaces it
+                self._close(r, r["e"], cut=True)
+        self.own_seen |= {r["u"] for r in self.closed if r.get("own")}
+        if left:
+            self._write_open()
+
+    def _set_closed(self, recs: list[dict]):
+        recs.sort(key=lambda r: (r["e"], r["s"]))
+        self.closed, self.by_user = recs, {}
+        for r in recs:
+            self.by_user.setdefault(r["u"], []).append(r)
+
+    def _append(self, rec: dict):
+        try:
+            with self.file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            self.lines += 1
+        except OSError as e:
+            print("presence file:", e, flush=True)
+
+    def _write_open(self):
+        try:
+            tmp = self.open_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"at": self.updated, "open": list(self.open.values()), "own": sorted(self.own_seen)},
+                                      ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.open_file)
+            self._open_dirty = False
+        except OSError as e:
+            print("presence file:", e, flush=True)
+
+    def prune(self, now_ms: int | None = None, force: bool = False) -> int:
+        """Drop stints that ended more than PRESENCE_KEEP_DAYS ago; rewrite the file (one line per stint).
+        Also rewritten when resumed stints left many extra lines."""
+        now_ms = now_ms or int(time.time() * 1000)
+        cutoff = now_ms - PRESENCE_KEEP_DAYS * 86_400_000
+        with self.lock:
+            keep = [r for r in self.closed if r["e"] >= cutoff]
+            gone = len(self.closed) - len(keep)
+            if gone or force or self.lines > 2 * len(keep) + 1000:
+                self._set_closed(keep)
+                try:
+                    tmp = self.file.with_suffix(".jsonl.tmp")
+                    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in keep), encoding="utf-8")
+                    os.replace(tmp, self.file)
+                    self.lines = len(keep)
+                except OSError as e:
+                    print("presence file:", e, flush=True)
+            return gone
+
+    # ---- stints
+    def _close(self, rec: dict, end: int, cut: bool):
+        rec["e"] = max(rec["s"], int(end))
+        rec["cut"] = bool(cut)
+        self.closed.append(rec)
+        self.by_user.setdefault(rec["u"], []).append(rec)
+        self._append(rec)
+        self._open_dirty = True
+
+    def _unclose(self, rec: dict):
+        """Take a closed stint back out (by identity, searching from the newest: it is near the end)."""
+        for lst in (self.closed, self.by_user.get(rec["u"], [])):
+            for i in range(len(lst) - 1, -1, -1):
+                if lst[i] is rec:
+                    del lst[i]
+                    break
+
+    def _last_closed(self, uid: str) -> dict | None:
+        lst = self.by_user.get(uid)
+        return lst[-1] if lst else None
+
+    def cut_all(self, why: str = ""):
+        """We can't see voice any more: close every open stint where it was last seen, marked cut."""
+        with self.lock:
+            for uid in list(self.open):
+                rec = self.open.pop(uid)
+                self._close(rec, rec["e"], cut=True)
+            self.guild_at.clear()
+            if self._open_dirty:
+                self._write_open()
+
+    def _start(self, since, g: str, at: int, last: dict | None) -> tuple[int, str]:
+        prev = self.guild_at.get(g)
+        cont = prev is not None and at - prev <= PRESENCE_STALE_MS
+        lo = prev - 5000 if cont else at - PRESENCE_MAX_BACK_MS
+        if isinstance(since, (int, float)) and lo <= since <= at + 5000:
+            s, how = min(int(since), at), "discord"
+        elif cont:
+            s, how = (prev + at) // 2, "seen"        # joined between the last snapshot and this one
+        else:
+            s, how = at, "seen"
+        if last and s < last["e"]:
+            s = last["e"]                            # never overlap their previous stint
+        return min(s, at), how
+
+    def observe(self, lobby: dict, at: int, source: dict, token, scope: dict, own: set, recording: set):
+        """One snapshot from the source account. scope: {"mode": "recorded"|"all"|"off", "ids": set, "names": set}.
+        recording: channel ids one of your accounts is recording right now."""
+        with self.lock:
+            self.mode = scope.get("mode", "recorded")
+            self.own_seen |= {x for x in own if isinstance(x, str)}
+            at = max(int(at), self.updated)            # another window's snapshot can be a few seconds older: time never runs back
+            if token != self.src_token:
+                if self.src_token is not None:
+                    self.cut_all("source changed")
+                self.src_token = token
+            elif self.open and self.updated and at - self.updated > PRESENCE_STALE_MS:
+                self.cut_all("gap")                     # a gap the stale check didn't catch yet: never stretch stints across it
+            self.source, self.last_lobby_at = source, lobby.get("at")
+            if self.mode == "off":
+                self.cut_all("off")
+                self.view, self.updated = None, at
+                return
+            names = scope.get("names", ())
+            for g in lobby.get("guilds") or []:
+                if isinstance(g, dict) and g.get("id") and g.get("name") in names:
+                    self.name_ids.add(g["id"])                 # matched by name once (old calls had no server id): keep the id
+            want = lambda gid, name: (self.mode == "all" or gid in scope.get("ids", ()) or gid in self.name_ids
+                                      or bool(name and name in names))
+            guilds = [g for g in (lobby.get("guilds") or []) if isinstance(g, dict) and g.get("id") and want(g["id"], g.get("name"))]
+            member_of = set(lobby.get("guildIds") or []) | {g.get("id") for g in (lobby.get("guilds") or []) if isinstance(g, dict)}
+            capped = bool(lobby.get("capped"))
+            part = {g["id"] for g in guilds if g.get("capped")}    # servers whose list was cut short: missing isn't leaving
+            listed ={g["id"] for g in (lobby.get("guilds") or []) if isinstance(g, dict) and g.get("id")}
+            covered = {gid for gid in member_of if want(gid, None)} | {g["id"] for g in guilds}   # servers this snapshot speaks for
+            seen: dict[str, tuple] = {}
+            for g in guilds:
+                for c in g.get("channels") or []:
+                    for p in c.get("people") or []:
+                        uid = p.get("id") if isinstance(p, dict) else None
+                        if isinstance(uid, str) and re.fullmatch(r"\d{15,22}", uid):
+                            seen[uid] = (g, c, p)
+            # who left, moved, or went out of sight
+            for uid, rec in list(self.open.items()):
+                hit = seen.get(uid)
+                if hit and hit[1].get("id") == rec["c"]:
+                    continue
+                if hit:
+                    continue                                       # moved: closed below, where the new stint starts
+                g = rec["g"]
+                if g in covered and g in member_of and not (capped and g not in listed) and g not in part:
+                    prev = self.guild_at.get(g)
+                    end = (rec["e"] + at) // 2 if prev is not None and at - prev <= PRESENCE_STALE_MS else rec["e"]
+                    self._close(self.open.pop(uid), end, cut=False)     # left voice
+                else:
+                    self._close(self.open.pop(uid), rec["e"], cut=True)  # that server is out of sight or out of scope
+            for uid, (g, c, p) in seen.items():
+                rec = self.open.get(uid)
+                if rec and rec["c"] == c["id"]:
+                    rec.update(e=at, gn=g.get("name") or rec.get("gn"), cn=c.get("name") or rec.get("cn"))
+                    rec["own"] = rec.get("own") or uid in own
+                    rec["rec"] = rec.get("rec") or c["id"] in recording
+                    continue
+                since = p.get("since")
+                if isinstance(since, (int, float)) and since < 1e11:
+                    since = int(since * 1000)                  # seconds (older hook) -> ms
+                if rec:                                        # moved channels
+                    s, how = self._start(since, g["id"], at, None)
+                    self._close(self.open.pop(uid), min(max(s, rec["e"]), at), cut=False)
+                last = self._last_closed(uid)
+                same_join = isinstance(since, (int, float)) and last is not None and abs(since - last["s"]) <= 2000
+                if (last and last["c"] == c["id"] and last["e"] <= at
+                        and ((last.get("cut") and (at - last["e"] <= PRESENCE_RESUME_MS or same_join))
+                             # one empty snapshot (Discord reconnecting): same join time, so they never left
+                             or (same_join and last.get("from") == "discord" and at - last["e"] <= 600_000))):
+                    self._unclose(last)                        # the same stint, seen again after a gap on our side
+                    last.update(e=at, cut=False, gn=g.get("name") or last.get("gn"), cn=c.get("name") or last.get("cn"))
+                    last["rec"] = last.get("rec") or c["id"] in recording
+                    self.open[uid] = last
+                    continue
+                s, how = self._start(since, g["id"], at, last)
+                self.open[uid] = {"id": _presence_id(uid, s), "u": uid, "g": g["id"], "gn": g.get("name"), "c": c["id"],
+                                  "cn": c.get("name"), "s": s, "e": at, "cut": False, "own": uid in own,
+                                  "rec": c["id"] in recording, "from": how}
+                self._open_dirty = True
+            self.guild_at = {gid: at for gid in covered}
+            self.updated = at
+            self.view = {"at": at, "guilds": guilds}
+
+    def check(self, now_ms: int):
+        """The source stopped reporting: close everything where it was last seen."""
+        with self.lock:
+            if self.open and self.updated and now_ms - self.updated > PRESENCE_STALE_MS:
+                self.cut_all("stale")
+
+    def gone(self, token):
+        """A Discord window disconnected: if it was the source, stop counting now."""
+        with self.lock:
+            if token is not None and token == self.src_token:
+                self.cut_all("disconnected")
+                self.src_token = None
+
+    # ---- derived
+    def recompute(self, now_ms: int):
+        """Seconds each pair spent in the same channel, and each person's total (your accounts left out of pairs).
+        Runs in the background thread; requests only read the result."""
+        with self.lock:                          # plain tuples: stints can change (a resume) while this runs
+            own = set(self.own_seen)
+            stints = [(r["u"], r["c"], r["s"], r["e"], bool(r.get("own"))) for r in self.closed]
+            stints += [(r["u"], r["c"], r["s"], max(r["e"], min(now_ms, r["e"] + PRESENCE_STALE_MS)), bool(r.get("own")))
+                       for r in self.open.values()]
+        totals: dict[str, list] = {}
+        by_ch: dict[str, list] = {}
+        for u, c, s, e, is_own in stints:
+            t = totals.setdefault(u, [0, 0]); t[0] += max(0, e - s) // 1000; t[1] += 1
+            if not is_own and u not in own and e > s:
+                by_ch.setdefault(c, []).append((s, e, u))
+        pairs: dict[str, dict[str, int]] = {}
+        for lst in by_ch.values():
+            lst.sort()
+            active: list[tuple] = []
+            for s, e, u in lst:
+                active = [a for a in active if a[1] > s]
+                for _, ae, au in active:
+                    if au == u:
+                        continue
+                    ms = min(ae, e) - s                  # active ones started no later than this one
+                    if ms > 0:
+                        for x, y in ((au, u), (u, au)):
+                            d = pairs.setdefault(x, {}); d[y] = d.get(y, 0) + ms
+                active.append((s, e, u))
+        self.pairs = {u: {o: ms // 1000 for o, ms in d.items()} for u, d in pairs.items()}
+        self.totals, self.pairs_at = totals, time.time()
+
+    def fresh_pairs(self, now_ms: int):
+        """Kept for callers: the totals are worked out in the background (loop), never on a request."""
+        return self.pairs
+
+    def stints_of(self, uid: str) -> list[dict]:
+        with self.lock:
+            out = [dict(r) for r in self.by_user.get(uid, [])]
+            if uid in self.open:
+                out.append({**self.open[uid], "open": True})
+        return out
+
+    def loop(self):
+        """Background: stale check every 5 s, open stints saved every minute, totals every few minutes, pruning daily."""
+        n = 0
+        while True:
+            time.sleep(5)
+            n += 1
+            try:
+                now_ms = int(time.time() * 1000)
+                self.check(now_ms)
+                if n % 12 == 0 and (self._open_dirty or self.open):
+                    with self.lock:
+                        self._write_open()
+                if n % 36 == 1:                          # first 5 s after start, then every 3 minutes
+                    self.recompute(now_ms)
+                if n % 17280 == 0:
+                    self.prune(now_ms)
+            except Exception as e:
+                print("presence:", e, flush=True)
+
+    def shutdown(self):
+        self.cut_all("shutdown")
+        with self.lock:
+            self._write_open()
+
+
+_rec_guilds: tuple = (0.0, set(), set())
+
+
+def recorded_guilds() -> tuple[set, set]:
+    """Server ids and names that appear in recorded calls (cached for a minute)."""
+    global _rec_guilds
+    if time.time() - _rec_guilds[0] < 60:
+        return _rec_guilds[1], _rec_guilds[2]
+    ids, names = set(), set()
+    for d in all_days():
+        for c in day_data(d)[1]:
+            if c.get("guild"):
+                ids.add(c["guild"])
+            elif c.get("guildName"):
+                names.add(c["guildName"])      # old lines without a server id
+    _rec_guilds = (time.time(), ids, names)
+    return ids, names
+
+
+def presence_scope(hub, lobby: dict, mode: str, now: float) -> dict:
+    """Which servers to track: those in recorded calls, those with auto-join channels,
+    and those one of your accounts is in a call in now ("recorded"); every one ("all"); none ("off")."""
+    if mode != "recorded":
+        return {"mode": mode if mode in ("all", "off") else "recorded", "ids": set(), "names": set()}
+    ids, names = recorded_guilds()
+    ids = set(ids) | {g for g in (lobby.get("watchGuilds") or []) if isinstance(g, str)}
+    for st, at in hub.ext_reports.values():
+        if now - at < 15 and (st.get("channel") or {}).get("guild"):
+            ids.add(st["channel"]["guild"])
+    return {"mode": "recorded", "ids": ids, "names": set(names)}
+
+
+def _lobby_fresh(st: dict, now: float) -> bool:
+    lob = st.get("lobby")
+    at = lob.get("at") if isinstance(lob, dict) else None
+    return isinstance(lob, dict) and (not isinstance(at, (int, float)) or now * 1000 - at <= PRESENCE_STALE_MS)
+
+
+def presence_source(hub, now: float):
+    """The connection whose lobby is used: the main account; else the one already in use while it
+    keeps reporting (no flipping between two listeners); else the newest report with a lobby."""
+    pr = getattr(hub, "presence", None)
+    cur = pr.src_token if pr is not None else None
+    best, key = None, None
+    for ws, (st, at) in hub.ext_reports.items():
+        if now - at > PRESENCE_STALE_MS / 1000 or not _lobby_fresh(st, now):
+            continue
+        role = st.get("role") or (hub.conns.get(ws) or {}).get("role")
+        k = (role == "main", cur is not None and id(ws) == cur, at)
+        if key is None or k > key:
+            best, key = ws, k
+    return best
+
+
+def recording_channels(hub, now: float) -> set:
+    return {(a.get("channel") or {}).get("id") for a in hub.accounts_state(now) if a.get("inCall") and a.get("capturing")} - {None}
+
+
+def presence_feed(hub, ws, now: float):
+    """Called on each status report: use the lobby if it comes from the source and is new."""
+    pr = getattr(hub, "presence", None)
+    if pr is None or presence_source(hub, now) is not ws:
+        return
+    st, _ = hub.ext_reports[ws]
+    lobby = st.get("lobby")
+    if not isinstance(lobby, dict) or (lobby.get("at") == pr.last_lobby_at and id(ws) == pr.src_token):
+        return
+    conn = hub.conns.get(ws) or {}
+    role = st.get("role") or conn.get("role")
+    source = {"account": conn.get("account"), "role": role, "label": conn.get("label") or (st.get("me") or {}).get("name"),
+              "userId": conn.get("userId") or (st.get("me") or {}).get("id"), "fallback": role != "main"}
+    at = lobby.get("at")
+    if isinstance(at, (int, float)) and now * 1000 - at > PRESENCE_STALE_MS:
+        return                                       # an old list (the page stopped making new ones): never stamp it as now
+    at_ms = int(at) if isinstance(at, (int, float)) and at - now * 1000 < 60_000 else int(now * 1000)
+    mode = current_settings().get("voiceWatch", "recorded")
+    pr.observe(lobby, at_ms, source, id(ws), presence_scope(hub, lobby, mode, now), hub.own_ids(), recording_channels(hub, now))
+    accs = lobby.get("accounts") or {}
+    if isinstance(accs, dict) and pr.view:          # names only for people in the servers being tracked
+        keep = {p.get("id") for g in pr.view["guilds"] for c in g.get("channels") or [] for p in c.get("people") or []}
+        hub.learn_accounts({u: a for u, a in accs.items() if u in keep}, voice=True)
+
+
+def best_name(hub, uid: str, style: str | None = None) -> str | None:
+    """How to show someone: the name their call lines use, else their Discord names by the nameStyle setting."""
+    if hub.names.get(uid):
+        return hub.names[uid]
+    p = hub.people_dir.get(uid) or {}
+    nick, disp, user = (p.get("nicks") or [None])[-1], (p.get("names") or [None])[-1], p.get("username")
+    order = {"display": (disp, nick, user), "username": (user, disp, nick)}.get(style or "nick", (nick, disp, user))
+    return next((x for x in order if x), None)
+
+
+def voice_view(hub, now: float) -> dict:
+    """/api/voice: who is in which voice channel right now, in the servers being tracked."""
+    pr = getattr(hub, "presence", None)
+    mode = current_settings().get("voiceWatch", "recorded")
+    if pr is None:
+        return {"watch": mode, "source": None, "updatedAt": None, "stale": True, "guilds": []}
+    now_ms, style = int(now * 1000), current_settings().get("nameStyle")
+    ours: dict[str, list] = {}
+    for a in hub.accounts_state(now):
+        cid = (a.get("channel") or {}).get("id")
+        if cid and a.get("inCall"):
+            ours.setdefault(cid, []).append({"account": a.get("account"), "label": a.get("label"), "role": a.get("role"),
+                                             "recording": bool(a.get("capturing"))})
+    own = hub.own_ids()
+    with pr.lock:
+        view, src, upd = pr.view, pr.source, pr.updated
+        opened = {u: r for u, r in pr.open.items()}
+    stale = not upd or now_ms - upd > PRESENCE_STALE_MS or presence_source(hub, now) is None
+    guilds = []
+    for g in (view or {}).get("guilds", []) if mode != "off" else []:
+        chans = []
+        for c in g.get("channels") or []:
+            people = []
+            for p in c.get("people") or []:
+                uid = p.get("id")
+                rec = opened.get(uid)
+                people.append({"id": uid, "name": best_name(hub, uid, style), "username": hub.username_of(uid),
+                               "since": rec["s"] if rec and rec["c"] == c.get("id") else p.get("since"),
+                               "mute": bool(p.get("mute")), "deaf": bool(p.get("deaf")), "stream": bool(p.get("stream")),
+                               "video": bool(p.get("video")), "own": uid in own})
+            us = ours.get(c.get("id"), [])
+            chans.append({"id": c.get("id"), "name": c.get("name"), "limit": c.get("limit") or 0, "people": people,
+                          "count": len(people), "ours": us, "recording": any(x["recording"] for x in us)})
+        chans.sort(key=lambda c: -c["count"])
+        guilds.append({"id": g.get("id"), "name": g.get("name"), "channels": chans, "people": sum(c["count"] for c in chans)})
+    return {"watch": mode, "source": src, "updatedAt": upd or None, "stale": stale, "guilds": guilds}
+
+
+def voice_person_safe(hub, uid: str, now: float) -> dict:
+    try:
+        return voice_person(hub, uid, now)
+    except Exception as e:
+        print("presence:", e, flush=True)
+        return {"id": uid, "totalSec": 0, "sessions": 0, "lastSeen": None, "with": [], "recent": []}
+
+
+def voice_person(hub, uid: str, now: float) -> dict:
+    """Voice time for one person: totals, last seen, who they are in voice with most, recent stints."""
+    pr = getattr(hub, "presence", None)
+    empty = {"id": uid, "totalSec": 0, "sessions": 0, "lastSeen": None, "with": [], "recent": []}
+    if pr is None:
+        return empty
+    now_ms = int(now * 1000)
+    pr.fresh_pairs(now_ms)
+    stints = pr.stints_of(uid)
+    if not stints:
+        return empty
+    style = current_settings().get("nameStyle")
+    spoke = {p["id"] for p in people_summary(hub)}
+    end_of = lambda r: max(r["e"], min(now_ms, r["e"] + PRESENCE_STALE_MS)) if r.get("open") else r["e"]
+    total = sum(max(0, end_of(r) - r["s"]) for r in stints) // 1000
+    last = max(stints, key=end_of)
+    calls: dict[str, list] = {}
+
+    def recorded(r) -> bool:
+        if r.get("rec"):
+            return True
+        d0, d1 = (dt.date.fromtimestamp(x / 1000) for x in (r["s"], end_of(r)))
+        days = [(d0 + dt.timedelta(days=i)).isoformat() for i in range(min((d1 - d0).days, 6) + 1)]
+        for d in days:
+            if d not in calls:
+                calls[d] = day_data(d)[1] if (TRANSCRIPTS / f"{d}.jsonl").exists() or (TRANSCRIPTS / f"{d}.md").exists() else []
+            if any(c.get("ch") == r["c"] and c["start"] < end_of(r) and c["end"] > r["s"] for c in calls[d]):
+                return True
+        return False
+
+    with_ = sorted((pr.pairs.get(uid) or {}).items(), key=lambda kv: -kv[1])[:12]
+    recent = sorted(stints, key=lambda r: -r["s"])[:20]
+    return {"id": uid, "name": best_name(hub, uid, style), "totalSec": int(total), "sessions": len(stints),
+            "lastSeen": {"ch": last["c"], "chName": last.get("cn"), "guild": last["g"], "guildName": last.get("gn"),
+                         "at": end_of(last), "now": bool(last.get("open"))},
+            "with": [{"id": o, "name": best_name(hub, o, style), "sec": s, "transcripts": o in spoke} for o, s in with_],
+            "recent": [{"ch": r["c"], "chName": r.get("cn"), "guild": r["g"], "guildName": r.get("gn"), "start": r["s"],
+                        "end": end_of(r), "open": bool(r.get("open")), "cut": bool(r.get("cut")), "recorded": recorded(r)}
+                       for r in recent],
+            "pairsAt": int(pr.pairs_at * 1000) if pr.pairs_at else None}
 
 
 def all_days() -> list[str]:
@@ -917,6 +1450,7 @@ class Hub:
         self.latency: deque = deque(maxlen=50)        # s from end of speech to text
         self.people: dict[str, "Segmenter"] = {}
         self.queue: queue.Queue | None = None
+        self.presence: "Presence | None" = None      # voice channel members over time (see Presence)
         self.load_people()
         self.names_file = TRANSCRIPTS.parent / "names.json"
         try:
@@ -936,10 +1470,10 @@ class Hub:
     def username_of(self, uid: str) -> str | None:
         return (self.people_dir.get(uid) or {}).get("username") if uid else None
 
-    def learn_account(self, uid: str, a: dict):
-        """{u: username, g: display name, n: server nickname} for a Discord id."""
+    def _learn(self, uid: str, a: dict, voice: bool = False) -> bool:
         if not uid or not re.fullmatch(r"\d{15,22}", uid) or not isinstance(a, dict) or not a.get("u"):
-            return
+            return False
+        new = uid not in self.people_dir
         p = self.people_dir.setdefault(uid, {"username": None, "usernames": [], "names": [], "nicks": [], "first": None})
         now = int(time.time() * 1000)
         changed = p.get("username") != a["u"]
@@ -948,14 +1482,31 @@ class Hub:
             if val and val not in p[key]:
                 p[key].append(str(val)[:80]); changed = True
         p["first"] = p.get("first") or now
-        if changed:
+        if voice and new:
+            p["seen"] = "voice"        # only seen in a voice channel's member list: no people/<name>.md for them
+        elif not voice and p.pop("seen", None):
+            changed = True
+        if changed and p.get("seen") != "voice":
             self.people_dirty.add(uid)
-            try:
-                tmp = self.people_file.with_suffix(".json.tmp")
-                tmp.write_text(json.dumps(self.people_dir, ensure_ascii=False, indent=1), encoding="utf-8")
-                tmp.replace(self.people_file)
-            except OSError:
-                pass
+        return changed
+
+    def _save_people(self):
+        try:
+            tmp = self.people_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.people_dir, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self.people_file)
+        except OSError:
+            pass
+
+    def learn_account(self, uid: str, a: dict):
+        """{u: username, g: display name, n: server nickname} for a Discord id."""
+        if self._learn(uid, a):
+            self._save_people()
+
+    def learn_accounts(self, accs: dict, voice: bool = False):
+        """Many at once (one save): from the voice lobby, people we may never have heard."""
+        if isinstance(accs, dict) and sum([self._learn(str(uid), a, voice) for uid, a in list(accs.items())[:2000]]):
+            self._save_people()
 
     def learn_name(self, uid: str, name: str):
         """Remember the real name behind a Discord id (relabels old user-1234 lines)."""
@@ -1294,11 +1845,12 @@ def save_settings(**kw):
 # Settings the dashboard can change (stored with the model choice in settings.json).
 SETTING_DEFAULTS = {"splitLines": True, "personality": True, "qaLinks": True, "nameStyle": "nick", "autoUpdate": True, "sensitivity": "normal", "language": "en",
                     "background": "dim", "vocabulary": "", "boost": "normal",
-                    "personaModel": "claude"}
+                    "personaModel": "claude", "voiceWatch": "recorded"}
 SETTING_CHOICES = {"nameStyle": ["nick", "display", "username"],   # how people are named: server nickname, display name, username
                    "sensitivity": ["high", "normal", "low"], "background": ["show", "dim", "hide"],   # how the dashboard shows "bg" lines
                    "boost": ["off", "low", "normal", "high"],     # how hard the models lean towards listed words
                    "personaModel": ["claude", "local"],   # who writes personality reads: Claude (online, with a key) or LFM3 here
+                   "voiceWatch": ["recorded", "all", "off"],   # whose voice channels to keep track of: servers with recorded calls or auto-join channels, every server, none
                    "language": ["en"]}      # Earshot transcribes English only: every model is held to it
 SENSITIVITY = {"high": 0.5, "normal": 1.0, "low": 2.0}     # x the speech threshold: high hears quieter voices
 VAD_SENSITIVITY = {"high": 0.35, "normal": 0.5, "low": 0.65}  # speech probability the VAD must reach (Silero's default is 0.5)
@@ -2054,7 +2606,10 @@ def name_finder(hub=None):
     names), with who each belongs to: names in the lines can be swapped for labels."""
     owner: dict[str, str] = {}
     pdir = (hub.people_dir if hub else {}) or {}
-    for uid, p in pdir.items():
+    skip = voice_only_ids(hub) if hub else set()
+    for uid, p in list(pdir.items()):          # list(): voice lists add people from the event loop meanwhile
+        if uid in skip:
+            continue                  # only seen in a voice channel list: kept out of personality reads
         for nm in [p.get("username")] + list(p.get("usernames") or []) + list(p.get("names") or []) + list(p.get("nicks") or []):
             if nm and len(nm.strip()) >= 3:
                 owner.setdefault(nm.strip().lower(), uid)
@@ -3647,6 +4202,8 @@ async def main():
     persona = PersonalityReader()
     qa_judge = QAJudge(persona)
     persona_book = PersonaBook(hub, persona)
+    hub.presence = Presence()
+    threading.Thread(target=hub.presence.loop, daemon=True).start()
     global PERSONA_BOOK
     PERSONA_BOOK = persona_book
     threading.Thread(target=updater.loop, daemon=True).start()
@@ -3694,7 +4251,20 @@ async def main():
                 return respond(person_markdown(hub, uid), ctype="text/markdown; charset=utf-8")
             p = hub.people_dir.get(uid) or {}
             return respond({"id": uid, "username": p.get("username"), "usernames": p.get("usernames", []),
-                            "names": p.get("names", []), "nicks": p.get("nicks", []), "lines": person_lines(uid)})
+                            "names": p.get("names", []), "nicks": p.get("nicks", []), "lines": person_lines(uid),
+                            "voice": voice_person_safe(hub, uid, time.time())})
+        if path == "/api/voice":
+            try:
+                return respond(voice_view(hub, time.time()))
+            except Exception as e:
+                print("presence:", e, flush=True)
+                return respond({"error": "Couldn't build the voice list."}, status=500)
+        if path == "/api/voice/person":
+            from urllib.parse import unquote_plus
+            uid = unquote_plus(params.get("user", "") or params.get("id", ""))
+            if not re.fullmatch(r"\d{15,22}", uid):
+                return respond({"error": "bad request"}, status=400)
+            return respond(voice_person_safe(hub, uid, time.time()))
         if path == "/api/calls":
             arch = archived_keys()
             calls = []
@@ -3960,9 +4530,16 @@ async def main():
                     if ev["s"].get("role") in ("main", "listener"):
                         conn["role"] = ev["s"]["role"]
                     await reelect()
+                    try:
+                        presence_feed(hub, ws, time.time())
+                    except Exception as e:
+                        print("presence:", e, flush=True)
+                    lob = ev["s"].get("lobby")
                     with (TRANSCRIPTS.parent / "status.log").open("a", encoding="utf-8") as f:
                         f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
-                                            **ev["s"], "paused": ev.get("paused")}) + "\n")
+                                            **{k: v for k, v in ev["s"].items() if k != "lobby"}, "paused": ev.get("paused"),
+                                            **({"lobby": {"guilds": len(lob.get("guilds") or []), "ms": lob.get("ms"),
+                                                           "dropped": lob.get("dropped"), "capped": lob.get("capped")}} if isinstance(lob, dict) else {})}) + "\n")
                 if time.time() - last_status > 30:
                     last_status = time.time()
                     live = [p.label for p in people.values() if time.time() - p.last_seen < 30]
@@ -3973,6 +4550,8 @@ async def main():
             hub.ext_sockets.discard(ws)
             hub.ext_reports.pop(ws, None)
             hub.conns.pop(ws, None)
+            if hub.presence:
+                hub.presence.gone(id(ws))
             for w, on in hub.elect():          # someone else in that channel takes over
                 try:
                     await w.send(json.dumps({"type": "capture", "on": on}))
@@ -3987,6 +4566,10 @@ async def main():
         print(f"Dashboard: http://127.0.0.1:{args.port}/  ·  transcripts → {TRANSCRIPTS}", flush=True)
         await stop.wait()
     writer.flush_md(force=True)                   # write any lines still waiting for earlier speech
+    try:
+        hub.presence.shutdown()                  # open voice stints: closed where last seen, marked cut
+    except Exception as e:
+        print("presence:", e, flush=True)
     print("Server stopped.", flush=True)
 
 
