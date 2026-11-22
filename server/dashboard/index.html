@@ -183,6 +183,15 @@ button.vpn:hover { color: var(--text-primary); text-decoration-color: currentCol
 .hit:hover { background: var(--surface-2); }
 .hit .m1 { color: var(--text-muted); font-size: 11.5px; }
 .hit .m2 { font-size: 12.5px; margin-top: 2px; }
+.hit .m0 { font-weight: 600; font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
+.hit .m0 svg { width: 13px; height: 13px; flex: none; color: var(--text-muted); }
+.hits-h { display: flex; align-items: baseline; gap: 8px; padding: 12px 8px 6px; }
+.hits-h .group { padding: 0; }
+.hits-h select { margin-left: auto; font: inherit; font-size: 11.5px; color: var(--text-secondary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 1px 4px; max-width: 55%; }
+/* a channel's log: where one call ends and the next starts */
+.callsep { display: flex; align-items: center; gap: 10px; margin: 14px 0 8px; color: var(--text-muted); font-size: 11.5px; font-weight: 600; }
+.callsep::before, .callsep::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.earlier { display: block; margin: 4px auto 10px; }
 .iconbtn { font: inherit; border: 1px solid var(--border); background: var(--surface-1); color: var(--text-secondary); border-radius: 8px; height: 32px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
 .iconbtn:hover { color: var(--text-primary); border-color: var(--text-muted); }
 .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; gap: 14px; padding: 16px 18px 18px; min-width: 0; }
@@ -1051,7 +1060,7 @@ select, input[type=search], .pp-list input, .srow .keyin input, .srow.vocab text
       <h1>Calls</h1>
       <button class="iconbtn" id="side-close" aria-label="Close the call list" title="Close the call list">✕</button>
     </div>
-    <input type="search" id="hq" placeholder="Search all calls…" aria-label="Search all calls">
+    <input type="search" id="hq" placeholder="Search all transcripts…" aria-label="Search all transcripts">
   </div>
   <div class="calls" id="calls"><div class="empty">No calls yet</div></div>
   <div class="merge-bar" id="merge-bar" hidden><span id="merge-n"></span><button class="ghost" id="merge-cancel">Cancel</button><button class="primary" id="merge-go">Merge</button></div>
@@ -1087,7 +1096,7 @@ select, input[type=search], .pp-list input, .srow .keyin input, .srow.vocab text
 
   <section class="main" id="layout">
     <div class="card c-feed" data-panel="transcript" data-title="Transcript">
-      <div class="head"><h2><span class="live-dot" id="livedot"></span>Transcript</h2><span class="meta" id="feedmeta"></span><input type="search" id="q" placeholder="Search this call…" aria-label="Search this call" style="height:26px;width:150px;font-size:12px"><button class="iconbtn" id="export" style="height:26px;font-size:12px" title="Save this call as a file, or copy it as text">Save call as file…</button></div>
+      <div class="head"><h2><span class="live-dot" id="livedot"></span>Transcript</h2><span class="meta" id="feedmeta"></span><input type="search" id="q" placeholder="Search this channel…" aria-label="Search this channel" style="height:26px;width:150px;font-size:12px"><button class="iconbtn" id="export" style="height:26px;font-size:12px" title="Save this channel's log as a file, or copy it as text">Save as file…</button></div>
       <div class="feed" id="feed"><div class="empty">Waiting for someone to speak…</div></div>
       <button class="jump" id="jump">↓ New lines</button>
     </div>
@@ -1111,7 +1120,7 @@ select, input[type=search], .pp-list input, .srow .keyin input, .srow.vocab text
       </div>
       <div class="card c-act" data-panel="activity" data-title="Activity">
         <div class="head"><h2>Activity</h2><span class="meta" id="act-meta"></span>
-          <div class="seg" id="act-range" style="margin-left:auto"><button data-r="60" class="on">Last hour</button><button data-r="0">Whole call</button></div>
+          <div class="seg" id="act-range" style="margin-left:auto"><button data-r="60" class="on">Last hour</button><button data-r="0">All</button></div>
         </div>
         <div class="legend" id="act-legend"></div>
         <div class="body" style="padding-top:0"><svg id="act" width="100%" height="150" role="img" aria-label="Talk time in each slice of time, by speaker"></svg></div>
@@ -1264,15 +1273,33 @@ function renderFeed(onlyAppend = false, around = null) {
   const slice = vis.slice(from);
   lineIdx = new Map(lines.map((r, i) => [r, i])); shownLines = lines;
   let prev = from > 0 ? vis[from - 1] : null;
+  // a channel's log: a divider where each call starts
+  const cc = currentCall(), ps = cc ? partsOf(cc) : [];
+  const partOf = (r) => r && ps.length > 1 ? ps.findIndex((p) => r.t >= p.start && r.t <= p.end && (!r.ch || !p.ch || r.ch === p.ch)) : -1;
+  let prevPart = partOf(prev);
+  if (from > 0 && !onlyAppend) html.push(`<button class="iconbtn earlier" id="earlier">Show earlier lines (${from.toLocaleString()} more)</button>`);
   for (const r of slice) {
     const k = keyOf.get(r);
-    const cont = prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
+    const pi = partOf(r), newPart = pi >= 0 && pi !== prevPart;
+    if (newPart) {
+      const p = ps[pi], live = pi === ps.length - 1 && isLiveCall(cc);
+      html.push(`<div class="callsep" role="separator">${esc(dayLabel(p.day))} · ${live ? `${fmtHM(p.start)} to now` : `${fmtHM(p.start)} to ${fmtHM(p.end)} · ${fmtDur((p.end - p.start) / 1000)}`}</div>`);
+      prevPart = pi;
+    }
+    const cont = !newPart && prev && keyOf.get(prev) === k && r.t - prev.end < 15000;
     const dimBg = r.bg && bgMode() === 'dim';
     html.push(`<div class="line${cont ? ' cont' : ''}${onlyAppend ? ' new' : ''}${dimBg ? ' bg' : ''}" data-t="${r.t}" data-li="${lineIdx.get(r)}"><div class="time">${fmtTime(r.t)}</div><div>${cont ? '' : `<span class="who${!SHARE && /^\d{15,22}$/.test(k) ? ' link' : ''}" data-k="${esc(k)}"${!SHARE && /^\d{15,22}$/.test(k) ? ` title="Open ${esc(nameFor(k))} in People"` : ''}><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`}<span class="text">${highlight(r.text)}</span>${dimBg ? '<span class="bgtag" title="Did not sound like this person: a video or someone else near their mic">background</span>' : ''}<span class="qa-slot"></span>${lineExtras(r)}</div></div>`);
     prev = r;
   }
   feed.insertAdjacentHTML('beforeend', html.join(''));
   lastRenderedCount = vis.length;
+  const eb = !onlyAppend && $('#earlier');
+  if (eb) eb.onclick = () => {           // 1000 more above, and the line that was first stays where it was
+    const first = vis[from], top = lineEl(lineIdx.get(first))?.getBoundingClientRect().top;
+    renderFeed(false, vis[Math.max(0, from - 1000) + 200] || vis[0]);
+    const el = lineEl(lineIdx.get(first));
+    if (el && top != null) { feed.style.scrollBehavior = 'auto'; feed.scrollTop += el.getBoundingClientRect().top - top; feed.style.scrollBehavior = ''; }
+  };
   paintQA();
   if (ai >= 0) feedFollow = false;                           // went back to an older line
   else if (feedFollow) pinFeed();
@@ -1456,7 +1483,10 @@ function stats() {
 function renderKPIs(s) {
   const span = lines.length ? (lines[lines.length - 1].end - lines[0].t) / 1000 : 0;
   $('#k-talk').textContent = lines.length ? fmtDur(s.talk) : '–';
-  $('#k-talk-s').textContent = lines.length ? `in a ${fmtDur(span)} call` : 'nothing yet';
+  // a channel's log: the calls' own lengths added up (not first line to last, which spans the quiet hours between)
+  const cc = currentCall(), np = cc ? partsOf(cc).length : 1;
+  const inCalls = np > 1 ? partsOf(cc).reduce((t, p, i, a) => t + ((i === a.length - 1 && isLiveCall(cc) ? Math.max(Date.now(), p.end) : p.end) - p.start) / 1000, 0) : span;
+  $('#k-talk-s').textContent = lines.length ? (np > 1 ? `over ${np} calls, ${fmtDur(inCalls)} in all` : `in a ${fmtDur(span)} call`) : 'nothing yet';
   $('#k-talk-s').title = lines.length ? `${fmtHM(lines[0].t)} to ${fmtHM(lines[lines.length - 1].end)}. Everyone's speaking time added up, so people talking at once count twice.` : '';
   $('#k-words').textContent = s.words.toLocaleString();
   $('#k-words-s').textContent = s.talk > 30 ? Math.round(s.words / (s.talk / 60)) + ' wpm' : ' ';
@@ -1658,7 +1688,7 @@ function attachZoom(key) {
 }
 
 // ------------------------------------------------------------ timeline (swimlanes)
-const rangeName = (m) => !m ? 'the whole call' : m < 60 ? `the last ${m} minutes` : 'the last hour';
+const rangeName = (m) => !m ? 'the whole log' : m < 60 ? `the last ${m} minutes` : 'the last hour';
 function tickStep(span, width, labelW) {   // a round step whose labels never touch
   for (const st of [5e3, 1e4, 15e3, 3e4, 6e4, 12e4, 3e5, 6e5, 9e5, 18e5, 36e5, 72e5]) if (width * st / span >= labelW + 14) return st;
   return 144e5;
@@ -2320,7 +2350,7 @@ async function copyCalls(group) {
   catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch { ok = false; } ta.remove(); }
   toast(ok ? (group.calls.length === 1 ? 'Copied the call as text' : `Copied ${group.calls.length} calls as text`) :'Could not copy. Try Plain text to save it as a file.');
 }
-$('#export').onclick = () => { const c = currentCall(); if (c) chooseFormat({ label: `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''}`, calls: [c] }); };
+$('#export').onclick = () => { const c = currentCall(); if (c) chooseFormat({ label: `${chTitle(c)}${c.guildName ? ' · ' + c.guildName : ''}`, calls: c.calls || [c] }); };
 
 // ------------------------------------------------------------ calls (sidebar) & plumbing
 let calls = [], selected = 'live';          // call id, or 'live' = follow the current call
@@ -2331,9 +2361,11 @@ const STAR_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="curre
 // Several calls can be live at once (one per account/voice channel).
 const liveChannels = () => new Set([...(liveState?.accounts || []).filter((a) => a.inCall && a.channel?.id).map((a) => a.channel.id),
   ...(liveState?.ext?.inCall && liveState.ext.channel?.id ? [liveState.ext.channel.id] : [])]);
-const isLiveCall = (c) => !!c && partsOf(c).some((p) => p.day === today() && Date.now() - p.end < GAP && (c === calls[0] || (!!p.ch && liveChannels().has(p.ch))));
-const liveCallCount = () => calls.filter(isLiveCall).length;
-const currentCall = () => selected === 'live' ? calls[0] : calls.find((c) => c.id === selected);
+const isLiveCall = (c) => !!c && partsOf(c).some((p) => p.day === today() && Date.now() - p.end < GAP && (c === calls[0] || (!!calls[0] && partsOf(calls[0]).includes(p)) || (!!p.ch && liveChannels().has(p.ch))));
+const liveCallCount = () => channels.filter(isLiveCall).length;
+// What opens on the right is a channel: every call in it as one log (see rebuildChannels)
+const channelOf = (call) => call ? channels.find((x) => x.calls.includes(call)) : null;
+const currentCall = () => selected === 'live' ? channelOf(calls[0]) : channels.find((c) => c.id === selected);
 const isToday = () => isLiveCall(currentCall());    // "viewing live" for the charts
 const chTitle = (c) => c?.chName || (c ? 'Unknown channel' : '');
 function dayLabel(d) {
@@ -2350,21 +2382,42 @@ const saveClosed = () => { try { localStorage.setItem('ct-closed', JSON.stringif
 const srvKey = (c) => c.guild ? 'g:' + c.guild : c.guildName ? 'gn:' + c.guildName : c.chName === 'Private call' ? 'dm' : 'unknown';
 const srvName = (c) => c.guildName || (c.chName === 'Private call' ? 'Direct calls' : 'Before channel tracking');
 const chKey = (c) => srvKey(c) + '|' + (c.ch || c.chName || '?');
+// One log per voice channel: the calls in a channel (by its name within the server, since Discord
+// recreates temporary channels under the same name) become the parts of one entry, oldest first.
+// The parts are the calls' own part objects, so a live line that stretches a call stretches its channel.
+const chGroup = (c) => (c.srvKey || srvKey(c)) + '|' + chTitle(c) + (c.archived ? '|archived' : '');
+let channels = [];
+function rebuildChannels() {
+  const m = new Map();
+  for (const c of calls) { const k = chGroup(c); if (!m.has(k)) m.set(k, []); m.get(k).push(c); }
+  const sum = (cs, f) => cs.reduce((n, c) => n + (c[f] || 0), 0);
+  channels = [...m].map(([k, cs]) => {
+    cs = cs.slice().sort((a, b) => partsOf(a)[0].start - partsOf(b)[0].start);
+    const parts = cs.flatMap(partsOf).sort((a, b) => a.start - b.start);
+    const last = cs.reduce((a, b) => Math.max(...partsOf(b).map((p) => p.end)) > Math.max(...partsOf(a).map((p) => p.end)) ? b : a);
+    const talk = new Map();
+    for (const c of cs) c.people.forEach((p, i) => talk.set(p, (talk.get(p) || 0) + 1 / (i + 1)));   // as the server ranks a merged call
+    return { id: 'ch:' + k, isChannel: true, calls: cs, parts,
+      ch: last.ch, chName: last.chName, guild: last.guild, guildName: last.guildName, srvKey: last.srvKey || srvKey(last), chKey: last.chKey || chKey(last),
+      chKeys: [...new Set(cs.map((c) => c.chKey || chKey(c)))], archived: cs[0].archived || '',
+      day: parts[0].day, start: parts[0].start, end: Math.max(...parts.map((p) => p.end)),
+      people: [...talk.keys()].sort((a, b) => talk.get(b) - talk.get(a)),
+      lines: sum(cs, 'lines'), words: sum(cs, 'words'), total: sum(cs, 'total') };
+  }).sort((a, b) => b.end - a.end);
+}
 let archOpen = false;
 try { archOpen = localStorage.getItem('ct-arch-open') === '1'; } catch {}
 const bySuffix = (p) => { const m = /^user-(\d{4})$/.exec(p); if (!m) return p; const uid = Object.keys(names).find((u) => u.endsWith(m[1])); return uid ? names[uid] : p; };
 
-// very short calls (under a minute, under 20 words) fold into one row per channel; the open folds
-// are remembered for this visit only. A live, open or picked call never folds.
-const openFolds = new Set();
-const isShortCall = (c) => c.end - c.start < 60000 && c.words < 20;
-function callRow(c, cur, chName) {
-  const lv = isLiveCall(c), parts = partsOf(c).length;
-  const ppl = [...new Set(c.people.map(bySuffix))];
-  return `<button class="call${c === cur ? ' on' : ''}${mergeSel.has(c.id) ? ' sel' : ''}" aria-pressed="${mergeSel.has(c.id)}" data-parts="${parts}" data-id="${esc(c.id)}" data-kind="call" data-key="${esc(c.id)}" data-label="${esc(chName + ' · ' + dayLabel(c.day) + ' ' + fmtHM(c.start))}" data-arch="${esc(c.archived || '')}" title="${esc(ppl.join(', '))}">
-          <div class="t1"><span class="ch">${lv ? `${fmtHM(c.start)} to now` : fmtHM(c.start) === fmtHM(c.end) ? fmtHM(c.start) : `${fmtHM(c.start)} to ${fmtHM(c.end)}`}</span>${lv ? '<span class="badge">LIVE</span>' : ''}<span class="more" role="button" tabindex="0" aria-haspopup="menu" aria-label="Call options" title="Save as file, merge, archive, delete…">⋯</span></div>
-          <div class="t2">${dayLabel(c.day)} · ${fmtDur((c.end - c.start) / 1000)}</div>
-          <div class="t3">${parts > 1 ? `<span class="merged" title="Merged from ${parts} calls. Use ⋯ (or right-click) to split them again.">Merged from ${parts} calls</span>` : ''}<span class="t3n">${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} · ${c.words.toLocaleString()} ${c.words === 1 ? 'word' : 'words'}</span></div>
+// a channel in the list: one row, its whole log opens on the right
+function channelRow(ch, cur, srv) {
+  const lv = isLiveCall(ch), n = ch.calls.length, last = ch.parts.at(-1);
+  const ppl = [...new Set(ch.people.map(bySuffix))];
+  const when = lv ? 'Live now' : `Last call ${dayLabel(last.day).replace(/^(Today|Yesterday)$/, (d) => d.toLowerCase())} ${fmtHM(last.start)}`;
+  return `<button class="call${ch === cur ? ' on' : ''}" data-id="${esc(ch.id)}" data-kind="channel" data-key="${esc(ch.id)}" data-label="${esc(chTitle(ch) + ' · ' + srv)}" data-arch="${esc(ch.archived || '')}" title="${esc(ppl.slice(0, 12).join(', ') + (ppl.length > 12 ? ` and ${ppl.length - 12} more` : ''))}">
+          <div class="t1">${CH_ICON}<span class="ch">${esc(chTitle(ch))}</span>${lv ? '<span class="badge">LIVE</span>' : ''}<span class="more" role="button" tabindex="0" aria-haspopup="menu" aria-label="Channel options" title="Save as file, archive, delete…">⋯</span></div>
+          <div class="t2">${esc(when)} · ${n} ${n === 1 ? 'call' : 'calls'}</div>
+          <div class="t3"><span class="t3n">${ppl.length} ${ppl.length === 1 ? 'person' : 'people'} · ${ch.words.toLocaleString()} ${ch.words === 1 ? 'word' : 'words'}</span></div>
         </button>`;
 }
 // ---- Voice now: who is in each voice channel of the servers Earshot tracks, read from what the
@@ -2454,11 +2507,8 @@ function tree(list, cur, prefix) {
   const servers = new Map();
   for (const c of list) {
     const sk = c.srvKey || srvKey(c);
-    if (!servers.has(sk)) servers.set(sk, { name: srvName(c), known: sk !== 'unknown', channels: new Map(), n: 0, arch: c.archived });
-    const sv = servers.get(sk); sv.n++;
-    const ck = c.chKey || chKey(c);
-    if (!sv.channels.has(ck)) sv.channels.set(ck, { name: chTitle(c), calls: [], arch: c.archived });
-    sv.channels.get(ck).calls.push(c);
+    if (!servers.has(sk)) servers.set(sk, { name: srvName(c), known: sk !== 'unknown', channels: [], n: 0, arch: c.archived });
+    const sv = servers.get(sk); sv.n += c.calls.length; sv.channels.push(c);
   }
   const order = [...servers.entries()].sort((a, b) => (a[0] === 'unknown') - (b[0] === 'unknown'));
   const vk = !prefix && !SHARE && voiceData ? voiceByKey() : new Map(), vUsed = new Set();
@@ -2468,28 +2518,10 @@ function tree(list, cur, prefix) {
     const g = prefix + sk, sOpen = !closedGroups.has(g);
     html += `<button class="srv${sOpen ? '' : ' closed'}" data-g="${esc(g)}" data-kind="server" data-key="${esc(sk)}" data-label="${esc(sv.name)}" data-arch="${esc(sv.arch || '')}" aria-expanded="${sOpen}"><span class="chev">▾</span>
       <span class="ic${sv.known ? '' : ' none'}">${sv.known ? esc(initialsOf(sv.name)) : '?'}</span><span class="nm">${esc(sv.name)}</span>
-      <span class="ct">${sv.n} ${sv.n === 1 ? 'call' : 'calls'}</span></button>`;
+      <span class="ct">${sv.channels.length} ${sv.channels.length === 1 ? 'channel' : 'channels'}</span></button>`;
     if (!sOpen) continue;
     if (vg) html += voiceGroup(vg, sk, prefix);
-    // two channels with one name (Discord recreates temporary channels) are told apart by when each was first used
-    const firstUse = (ch) => Math.min(...ch.calls.map((c) => c.start));
-    const twins = (ch) => [...sv.channels.values()].filter((o) => o !== ch && o.name === ch.name);
-    for (const [ck, ch] of sv.channels) {
-      const tw = twins(ch), t0 = firstUse(ch);
-      const since = !tw.length ? '' : ` · since ${tw.some((o) => fmtDay(firstUse(o)) === fmtDay(t0)) ? (fmtDay(t0) === fmtDay(Date.now()) ? fmtHM(t0) : `${fmtDay(t0)}, ${fmtHM(t0)}`) : fmtDay(t0)}`;
-      const cg = prefix + ck, cOpen = !closedGroups.has(cg);
-      const live = ch.calls.some(isLiveCall);
-      html += `<button class="chn${cOpen ? '' : ' closed'}" data-g="${esc(cg)}" data-kind="channel" data-key="${esc(ck)}" data-label="${esc(ch.name + ' · ' + sv.name)}" data-arch="${esc(ch.arch || '')}" aria-expanded="${cOpen}"><span class="chev">▾</span>${CH_ICON}<span class="cn">${esc(ch.name + since)}</span>${live ? '<span class="live" title="Live now"></span>' : ''}<span class="ct">${ch.calls.length} ${ch.calls.length === 1 ? 'call' : 'calls'}</span></button>`;
-      if (!cOpen) continue;
-      const fold = ch.calls.filter((c) => isShortCall(c) && !isLiveCall(c) && c !== cur && !mergeSel.has(c.id));
-      const folded = fold.length >= 2 ? new Set(fold) : new Set();   // one short call stays a row of its own
-      for (const c of ch.calls) if (!folded.has(c)) html += callRow(c, cur, ch.name);
-      if (folded.size) {
-        const fk = prefix + ck, fOpen = openFolds.has(fk);
-        html += `<button class="fold${fOpen ? '' : ' closed'}" data-fold="${esc(fk)}" aria-expanded="${fOpen}" title="Calls under a minute with fewer than 20 words"><span class="chev">▾</span>${fOpen ? 'Hide' : 'Show'} ${folded.size} short calls</button>`;
-        if (fOpen) for (const c of fold) html += callRow(c, cur, ch.name);
-      }
-    }
+    for (const ch of sv.channels) html += channelRow(ch, cur, sv.name);
   }
   // servers with people in voice but no calls yet (the "All my servers" setting)
   for (const g of voiceData && !prefix && !SHARE ? voiceData.guilds : []) {
@@ -2504,12 +2536,12 @@ function tree(list, cur, prefix) {
 function renderCalls() {
   const box = $('#calls');
   if (hq.length >= 2) return;                      // search results own the list
-  const active = calls.filter((c) => !c.archived), archived = calls.filter((c) => c.archived);
+  const active = channels.filter((c) => !c.archived), archived = channels.filter((c) => c.archived);
   const cur = currentCall();
   let html = !calls.length ? '<div class="empty">No calls yet.<br>Join a voice channel in Discord.</div>' + tree([], null, '')
     : active.length ? tree(active, cur, '') : '<div class="empty" style="padding:16px 8px">No calls (everything is archived)</div>' + tree([], cur, '');
   if (archived.length) {
-    html += `<button class="archhead${archOpen ? '' : ' closed'}" id="archhead"><span class="chev">▾</span>Archived<span class="ct" style="margin-left:auto">${archived.length}</span></button>`;
+    html += `<button class="archhead${archOpen ? '' : ' closed'}" id="archhead"><span class="chev">▾</span>Archived<span class="ct" style="margin-left:auto">${archived.length} ${archived.length === 1 ? 'channel' : 'channels'}</span></button>`;
     if (archOpen) html += `<div class="archived-tree">${tree(archived, cur, 'a/')}</div>`;
   }
   // a rebuild keeps keyboard focus on the same row or name
@@ -2525,16 +2557,7 @@ function renderCalls() {
     if (voiceOpenCh.has(k)) voiceOpenCh.delete(k); else voiceOpenCh.add(k);
     renderCalls();
   });
-  box.querySelectorAll('.call').forEach((el) => el.onclick = (e) => {
-    // ⌘/Ctrl/Shift-click, or any click while picking: choose calls to merge
-    if (e.metaKey || e.ctrlKey || e.shiftKey || mergeSel.size) return toggleMergeSel(el.dataset.id);
-    openCall(el.dataset.id);
-  });
-  box.querySelectorAll('.fold').forEach((el) => el.onclick = () => {
-    const k = el.dataset.fold;
-    if (openFolds.has(k)) openFolds.delete(k); else openFolds.add(k);
-    renderCalls(); box.querySelector(`.fold[data-fold="${CSS.escape(k)}"]`)?.focus();
-  });
+  box.querySelectorAll('.call').forEach((el) => el.onclick = () => openCall(el.dataset.id));
   box.querySelectorAll('.srv, .chn').forEach((el) => el.onclick = () => {
     const g = el.dataset.g;
     if (closedGroups.has(g)) closedGroups.delete(g); else closedGroups.add(g);
@@ -2847,6 +2870,10 @@ $('#calls').addEventListener('contextmenu', (e) => {
   if (!ctxOpener || !el.contains(ctxOpener)) ctxOpener = el;
   const { kind, key, label, arch } = el.dataset;
   const what = kind === 'server' ? 'server' : kind === 'channel' ? 'channel' : 'call';
+  // a channel row is every Discord channel of that name in the server: act on each of them
+  const chObj = kind === 'channel' ? channels.find((x) => x.id === key) : null;
+  const keys = chObj ? chObj.chKeys : [key];
+  const each = (f) => Promise.all(keys.map((k2) => api(f(encodeURIComponent(k2)))));
   // the first item gets focus, so it is the harmless one; Archive and Delete sit apart at the end
   const items = [['export', `Save ${what} as file…`]];
   if (kind === 'call') {
@@ -2883,24 +2910,28 @@ $('#calls').addEventListener('contextmenu', (e) => {
     if (a === 'merge') { mergeSel.add(key); renderMergeBar(); renderCalls(); if (mergeSel.size < 2) toast('Now click the other calls to merge with it, then press Merge.'); return; }
     if (a === 'unmerge') { await api('/api/unmerge?id=' + encodeURIComponent(key)); dayCache.clear(); }
     if (a === 'export') {
-      const group = calls.filter((c) => kind === 'call' ? c.id === key : kind === 'channel' ? (c.chKey || chKey(c)) === key : (c.srvKey || srvKey(c)) === key);
+      const group = chObj ? chObj.calls : calls.filter((c) => kind === 'call' ? c.id === key : (c.srvKey || srvKey(c)) === key);
       return chooseFormat({ label, calls: group });
     }
     if (a === 'archive') {
-      await api(`/api/archive?kind=${kind}&key=${encodeURIComponent(key)}&on=1`);
+      await each((k2) => `/api/archive?kind=${kind}&key=${k2}&on=1`);
       toastUndo(`${what[0].toUpperCase() + what.slice(1)} archived`, async () => {
-        await api(`/api/archive?kind=${kind}&key=${encodeURIComponent(key)}&on=0`);
+        await each((k2) => `/api/archive?kind=${kind}&key=${k2}&on=0`);
         await loadCalls(); await showCall(true);
       });
     }
-    if (a === 'unarchive') { const [k2, ...rest] = arch.split(':'); await api(`/api/archive?kind=${k2}&key=${encodeURIComponent(rest.join(':'))}&on=0`); }
+    if (a === 'unarchive') {
+      for (const ak of new Set(chObj ? chObj.calls.map((c) => c.archived).filter(Boolean) : [arch])) {
+        const [k2, ...rest] = ak.split(':'); await api(`/api/archive?kind=${k2}&key=${encodeURIComponent(rest.join(':'))}&on=0`);
+      }
+    }
     if (a === 'delete') {
-      const n = await api(`/api/delete?kind=${kind}&key=${encodeURIComponent(key)}&dry=1`);
+      const n = (await each((k2) => `/api/delete?kind=${kind}&key=${k2}&dry=1`)).reduce((t, x) => ({ calls: t.calls + (x.calls || 0), lines: t.lines + (x.lines || 0) }), { calls: 0, lines: 0 });
       const ok = await confirmBox(`Delete ${what} “${label}”?`,
         `This removes ${n.calls} ${n.calls === 1 ? 'call' : 'calls'} (${n.lines.toLocaleString()} lines) from your transcripts and stats.`,
         'Removed lines go to the transcripts/.trash folder, so you can still get them back by hand.', 'Delete');
       if (!ok) return;
-      await api(`/api/delete?kind=${kind}&key=${encodeURIComponent(key)}`);
+      await each((k2) => `/api/delete?kind=${kind}&key=${k2}`);
       dayCache.clear();
     }
     await loadCalls(); await showCall(true);
@@ -4097,7 +4128,8 @@ function linesOf(c, recs) {
 }
 function renderWhere() {
   const c = currentCall();
-  $('#where').innerHTML = c ? `${CH_ICON}<b>${esc(chTitle(c))}</b>${c.guildName ? `<span>· ${esc(c.guildName)}</span>` : ''}<span>· ${dayLabel(c.day)} ${fmtHM(c.start)}</span>` : '';
+  const n = c?.calls?.length || 1;
+  $('#where').innerHTML = c ? `${CH_ICON}<b>${esc(chTitle(c))}</b>${c.guildName ? `<span>· ${esc(c.guildName)}</span>` : ''}<span>· ${n === 1 ? `${dayLabel(c.day)} ${fmtHM(c.start)}` : `${n} calls since ${fmtDay(c.start)}`}</span>` : '';
   const ch = liveState?.ext?.channel;
   if (!c && ch) $('#where').innerHTML = `${CH_ICON}<b>${esc(ch.name)}</b>${ch.guildName ? `<span>· ${esc(ch.guildName)}</span>` : ''}<span>· waiting for speech</span>`;
 }
@@ -4122,16 +4154,21 @@ async function showCall(fresh = false) {
   if (panelShown('persona') && persCallId !== c.id) setTimeout(refreshPers, 300);   // the cards fill now, not at the next 30 s refresh
   emit('call', c);
 }
-function reveal(c) { if (c) { closedGroups.delete(srvKey(c)); closedGroups.delete(chKey(c)); saveClosed(); } }
+function reveal(c) { if (c) { closedGroups.delete(c.srvKey || srvKey(c)); saveClosed(); } }
+// id: a channel ('ch:…') or one of its calls; scrollToT: the time of a line to open at
 async function openCall(id, scrollToT) {
   feedFollow = !scrollToT;            // opening at a search hit: stay there
-  selected = id === calls[0]?.id && isLiveCall(calls[0]) && liveCallCount() <= 1 ? 'live' : id;
-  reveal(calls.find((c) => c.id === id));
+  const ch = channels.find((x) => x.id === id) || channelOf(calls.find((c) => c.id === id || partsOf(c).some((p) => p.id === id)));
+  if (!ch) return;
+  selected = ch === channelOf(calls[0]) && isLiveCall(ch) && liveCallCount() <= 1 && !scrollToT ? 'live' : ch.id;
+  reveal(ch);
   filter = null; query = ''; $('#q').value = '';
   chartView.act = chartView.tl = null;
   await showCall();
   if (scrollToT) {
-    const el = [...document.querySelectorAll('.line')].find((x) => +x.dataset.t === scrollToT);
+    const find = () => [...document.querySelectorAll('#feed .line')].find((x) => +x.dataset.t === scrollToT);
+    let el = find();
+    if (!el) { const r = visibleLines().find((x) => x.t === scrollToT); if (r) { renderFeed(false, r); el = find(); } }   // older than the lines on screen
     if (el) { el.scrollIntoView({ block: 'center' }); el.classList.remove('new'); void el.offsetWidth; el.classList.add('new'); }
   }
 }
@@ -4142,30 +4179,47 @@ async function loadCalls() {
   ]);
   const prevTop = calls[0]?.id;
   calls = cs; Object.assign(names, nm);
-  if (calls[0] && calls[0].id !== prevTop && isLiveCall(calls[0])) reveal(calls[0]);
-  if (selected !== 'live' && !calls.some((c) => c.id === selected)) selected = 'live';
+  rebuildChannels();
+  if (calls[0] && calls[0].id !== prevTop && isLiveCall(calls[0])) reveal(channelOf(calls[0]));
+  if (selected !== 'live' && !channels.some((c) => c.id === selected)) selected = 'live';
   if (SHARE_CH) {                     // shared view of one account's call: follow that channel
     const c = calls.find((x) => partsOf(x).some((p) => p.ch === SHARE_CH && p.day === today()));
-    if (c) selected = c.id;
+    if (c) selected = channelOf(c).id;
   }
 }
 
 // history search (sidebar)
 let hq = '', hqTimer;
+// a hit's channel in the list (the server says which call it is in)
+const hitChannel = (h) => h.call ? channelOf(calls.find((c) => c.id === h.call || partsOf(c).some((p) => p.id === h.call))) : null;
+let hqHits = [], hqTotal = 0, hqCh = '';
+function renderHits() {
+  const qre = new RegExp(hq.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  const all = hqHits.filter((h) => !(h.bg && bgMode() === 'hide')).map((h) => ({ h, ch: hitChannel(h) }));
+  const chs = [...new Map(all.filter((x) => x.ch).map((x) => [x.ch.id, x.ch])).values()];
+  if (hqCh && !chs.some((c) => c.id === hqCh)) hqCh = '';
+  const shown = hqCh ? all.filter((x) => x.ch?.id === hqCh) : all;
+  const more = hqTotal > hqHits.length ? ` of ${hqTotal.toLocaleString()}` : '';
+  const pick = chs.length > 1 ? `<select id="hq-ch" aria-label="Show matches from one channel"><option value="">All channels</option>${chs.map((c) => `<option value="${esc(c.id)}"${c.id === hqCh ? ' selected' : ''}>${esc(chTitle(c))}${c.guildName ? ' · ' + esc(c.guildName) : ''}</option>`).join('')}</select>` : '';
+  $('#calls').innerHTML = `<div class="hits-h"><div class="group">${shown.length.toLocaleString()}${hqCh ? '' : more} ${shown.length === 1 && !more ? 'match' : 'matches'}</div>${pick}</div>` + (shown.map(({ h, ch }) => `
+      <button class="hit" data-ch="${esc(ch?.id || '')}" data-t="${h.t}" title="Open ${esc(ch ? chTitle(ch) : 'this channel')} at this line">
+        <div class="m0">${CH_ICON}${esc(h.chName || (ch && chTitle(ch)) || 'Unknown channel')}${h.guildName ? ' · ' + esc(h.guildName) : ''}</div>
+        <div class="m1">${dayLabel(h.day)} ${fmtHM(h.t)}</div>
+        <div class="m2"><b>${esc(h.speaker).replace(qre, (m) => `<mark>${m}</mark>`)}</b> ${esc(h.text).replace(qre, (m) => `<mark>${m}</mark>`)}${h.bg && bgMode() !== 'show' ? '<span class="bgtag">background</span>' : ''}</div>
+      </button>`).join('') || '<div class="empty">No matches</div>');
+  $('#calls').querySelectorAll('.hit').forEach((el) => el.onclick = () => el.dataset.ch && openCall(el.dataset.ch, +el.dataset.t));
+  const sel = $('#hq-ch'); if (sel) sel.onchange = () => { hqCh = sel.value; renderHits(); $('#hq-ch')?.focus(); };
+}
 $('#hq').oninput = () => {
   clearTimeout(hqTimer);
   hqTimer = setTimeout(async () => {
     hq = $('#hq').value.trim();
-    if (hq.length < 2) return renderCalls();
-    const hits = await fetch('/api/search?q=' + encodeURIComponent(hq)).then((r) => r.json()).catch(() => []);
-    const qre = new RegExp(hq.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-    const shown = hits.filter((h) => !(h.bg && bgMode() === 'hide'));
-    $('#calls').innerHTML = `<div class="group">${hits.length >= 150 ? '150+' : shown.length} matches</div>` + (shown.map((h) => `
-      <button class="hit" data-call="${esc(h.call || '')}" data-t="${h.t}">
-        <div class="m1">${dayLabel(h.day)} ${fmtHM(h.t)}${h.chName ? ' · ' + esc(h.chName) : ''}</div>
-        <div class="m2"><b>${esc(h.speaker)}</b> ${esc(h.text).replace(qre, (m) => `<mark>${m}</mark>`)}${h.bg && bgMode() !== 'show' ? '<span class="bgtag">background</span>' : ''}</div>
-      </button>`).join('') || '<div class="empty">No matches</div>');
-    $('#calls').querySelectorAll('.hit').forEach((el) => el.onclick = () => el.dataset.call && openCall(el.dataset.call, +el.dataset.t));
+    if (hq.length < 2) { hqHits = []; return renderCalls(); }
+    const want = hq;
+    const r = await fetch('/api/search?q=' + encodeURIComponent(hq)).then((x) => x.json()).catch(() => []);
+    if (want !== hq) return;                       // typed on meanwhile
+    hqHits = Array.isArray(r) ? r : r.hits || []; hqTotal = Array.isArray(r) ? r.length : r.total || hqHits.length;
+    renderHits();
   }, 200);
 };
 
@@ -4256,8 +4310,10 @@ function connect() {
           if (!top.people.includes(m.speaker)) top.people.push(m.speaker);
         }
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
-        if ((selected === 'live' && top === calls[0]) || selected === top.id) {
-          allLines = callRecs(top); lines = linesOf(top, allLines);   // (a merged call's lines come from several days)
+        rebuildChannels();
+        const cur = currentCall();
+        if (cur && cur.calls.includes(top)) {
+          allLines = callRecs(cur); lines = linesOf(cur, allLines);   // (a channel's lines come from several days)
           const atEnd = lines[lines.length - 1] === m;
           rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderWords(); renderWhere();
           if (atEnd && !filter && !query) renderFeed(true); else renderFeed();

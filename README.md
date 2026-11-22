@@ -43,7 +43,7 @@ dashboard next to the call, and no audio ever leaves your machine.
 
 - Live transcript with search, and export to Markdown, text, SRT subtitles, CSV or JSON.
 - Talk time, activity over time, a 10-minute timeline, crosstalk and most-said words.
-- Past calls grouped by server and channel, with search across all of them.
+- One log per voice channel: every call in a channel reads as one transcript, with a divider where each call starts. Search covers every transcript, shows how many matches there are, can narrow to one channel, and opens the channel at the matching line.
 - Compact mode puts the transcript and every panel on one screen, no scrolling.
 - Arrange it your way: drag panels between columns, size or hide them, and add new ones from plugins.
 - Personality reads: how each person comes across, as Big Five scores and interpersonal signals (including a narcissistic, self-focused style). The first read comes once they have said 40 lines and a new one after every 400 more, across all their calls, and every read is kept (personas.json). With an Anthropic API key saved in Settings, Claude Sonnet 5.5 doesn't score people directly: it tags each of their lines against a fixed codebook (brags, put-downs, banter, help, plans and so on), two independent passes per line, and only tags both passes agree on count. Fixed rules then turn the tag rates into scores, with minimum evidence for each score and "not rated" when there isn't enough. Their lines, and what others said just before and after, are sent to Anthropic for this. The Study window charts each person's reads over time, compares people, and checks reads against Big Five test scores you enter (for example from the free BFI-2). Without a key, the small local model writes them and nothing leaves your computer. An impression of their style, not a diagnosis.
@@ -97,7 +97,7 @@ With an NVIDIA graphics card the PC uses it for the most accurate model; without
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>T</kbd> | Picks a channel for the next free account to join |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>K</kbd> | Switches compact mode on and off |
 | <kbd>⌘</kbd><kbd>⇧</kbd><kbd>M</kbd> | Turns the call's sound off for you, while it keeps being transcribed |
-| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every call |
+| <kbd>⌘</kbd><kbd>⇧</kbd><kbd>F</kbd> | Searches every transcript |
 | Layout button in the header | Customize: drag, size and hide panels, and change the columns |
 | <kbd>⌘</kbd><kbd>,</kbd> | Opens Settings: start at login, auto-join, sentence splitting, speech detection, language, personality reads, updates |
 | **Read** next to a name in Talk time | Writes a personality read of that person |

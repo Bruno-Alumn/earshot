@@ -4426,18 +4426,22 @@ async def main():
             q = unquote_plus(params.get("q", "")).strip().lower()
             if len(q) < 2:
                 return respond([])
-            hits, parts = [], merged_id_of()
+            # every transcript, newest first: the first 300 matches, and how many there are in all
+            hits, total, parts = [], 0, merged_id_of()
             for d in all_days():
                 recs, calls = day_data(d)
                 for r in reversed(recs):
                     if q in r["text"].lower() or q in r["speaker"].lower():
-                        call = next((c for c in calls if c["start"] <= r["t"] <= c["end"]), None)
+                        total += 1
+                        if len(hits) >= 300:
+                            continue
+                        same = lambda c: c["start"] <= r["t"] <= c["end"] and (not r.get("ch") or not c.get("ch") or r["ch"] == c["ch"])
+                        call = next((c for c in calls if same(c)), None)
                         hits.append({"day": d, "t": r["t"], "speaker": r["speaker"], "text": r["text"], "bg": bool(r.get("bg")),
                                      "chName": r.get("chName") or (call or {}).get("chName"),
+                                     "guildName": r.get("guildName") or (call or {}).get("guildName"),
                                      "call": call and parts.get(call["id"], call["id"])})
-                        if len(hits) >= 150:
-                            return respond(hits)
-            return respond(hits)
+            return respond({"hits": hits, "total": total})
         if path == "/api/days":
             days = sorted({f.stem for f in TRANSCRIPTS.glob("*.md")} | {f.stem for f in TRANSCRIPTS.glob("*.jsonl")}, reverse=True)
             return respond(days)
