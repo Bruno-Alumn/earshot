@@ -59,7 +59,7 @@ const site = http.createServer((req, res) => {
   const seed = () => app.evaluate(({ BrowserWindow }, { v, s, sr, stage }) => {
     const js = `window.__present = ${JSON.stringify(stage === 1
       ? { [v]: ['511111111111111111', '522222222222222222'], [s]: ['533333333333333333'], [sr]: ['544444444444444444', '511111111111111111'] }
-      : { [v]: [], [s]: ['533333333333333333'], [sr]: ['544444444444444444', '511111111111111111'] })};` + (stage === 2 ? `window.__limit = ${JSON.stringify({ [s]: 5 })};` : '');
+      : { [v]: [], [s]: ['533333333333333333', '555555555555555555'], [sr]: ['544444444444444444', '511111111111111111'] })};` + (stage === 2 ? `window.__limit = ${JSON.stringify({ [s]: 5 })};` : '');
     for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().startsWith('http://localhost:8899')) w.webContents.executeJavaScript(js).catch(() => {});
   }, { v: VOICE4, s: STANDUP, sr: SIDE, stage });
   await seed();
@@ -94,7 +94,7 @@ const site = http.createServer((req, res) => {
     await sleep(1000);
   }
   console.log('ALONE, MOVED TO', JSON.stringify(moved));
-  if (moved !== 'Standup') fail('left alone in Voice 4, the account should move to Standup (open, flagged, has a person); got ' + moved);
+  if (moved !== 'Standup') fail('left alone in Voice 4, the account should move to Standup (open, flagged, two people in it); got ' + moved);
 
   const acc = async () => { const st = await get('/api/state'); return (st?.accounts || []).find((x) => x.account === 'l1') || (st?.accounts || [])[0]; };
   const waitFor = async (fn, secs) => { for (let i = 0; i < secs; i++) { if (await fn()) return true; await sleep(1000); } return false; };

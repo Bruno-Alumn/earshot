@@ -81,6 +81,13 @@ ok('busiest open channel first', busy[0] && busy[0].channelId === 'cHot');
 const busy2 = busiestFirst([{ channelId: 'a', name: 'A', fav: false, count: 2 }, { channelId: 'b', name: 'B', fav: false, count: 6 }, { channelId: 'f', name: 'F', fav: true, count: 1 }]);
 ok('favourite, then most people', busy2.map((c) => c.channelId).join() === 'f,b,a');
 
+// 9b. Two people minimum (what main.js asks for): one person on their own isn't a call.
+const two = candidates({ directory, flags, occ, now: 1000, minPeople: 2 });
+ok('min 2: one-person channel skipped', !two.some((c) => c.channelId === 'cFav') && two[0]?.channelId === 'cHot');
+ok('min 2: one real person left counts as alone', isAlone({ occ: { c1: { count: 1 } }, channelId: 'c1', minPeople: 2 }));
+ok('min 2: two real people is a call', !isAlone({ occ: { c1: { count: 2 } }, channelId: 'c1', minPeople: 2 }));
+ok('min 2: one person plus your other account is still alone', isAlone({ occ: { c1: { count: 2 } }, channelId: 'c1', ownHere: 1, minPeople: 2 }));
+
 // 10. classifyLeave: a reload since we last saw it there is ours; anything else is a removal.
 ok('page reloaded: goes back', classifyLeave({ lastIn: { channelId: 'c1', at: 1000 }, navAt: 2000 }) === 'reloaded');
 ok('no reload: removed (kick, disconnect, Leave)', classifyLeave({ lastIn: { channelId: 'c1', at: 2000 }, navAt: 1000 }) === 'removed');

@@ -19,6 +19,7 @@ const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyL
 // on after a stretch of silence. Timings are overridable for the test harness.
 const AUTOJOIN_IDLE = Number(process.env.CT_AUTOJOIN_IDLE) || 180;          // seconds of silence before moving on
 const AUTOJOIN_COOLDOWN = Number(process.env.CT_AUTOJOIN_COOLDOWN) || 120000; // ms to avoid a channel we just left or failed to join
+const AUTOJOIN_MIN = Number(process.env.CT_AUTOJOIN_MIN) || 2;            // real people a channel needs (not counting your accounts)
 const AUTOJOIN_ALONE = Number(process.env.CT_AUTOJOIN_ALONE) || 60;         // seconds alone in a channel before moving on
 const AUTOJOIN_TICK = Number(process.env.CT_AUTOJOIN_TICK) || 8000;         // how often the controller re-evaluates
 
@@ -824,7 +825,7 @@ function autoJoinChannel(a, cand) {
 }
 // Runs on a timer. For each free account, join the best open flagged channel;
 // for a channel that has gone quiet, move on to the next one.
-// An account left alone in any channel (nobody there but your own accounts) for
+// An account left alone in any channel (fewer than AUTOJOIN_MIN real people) for
 // AUTOJOIN_ALONE seconds, or in a channel silent for AUTOJOIN_IDLE, moves to the
 // best open flagged channel none of your other accounts is in. One that drops out
 // because its page reloaded or crashed goes back; one taken out of voice any other
@@ -875,7 +876,7 @@ function autoJoinTick() {
       } else {
         const o = occOf(status)[back.channelId];
         const held = connectedNow.has(back.channelId) && connectedNow.get(back.channelId) !== a.id;
-        const open = !o || (o.count >= 1 && !(o.limit > 0 && o.count >= o.limit));
+        const open = !o || (o.count >= AUTOJOIN_MIN && !(o.limit > 0 && o.count >= o.limit));
         if (!held && open && !((r.cooldowns[back.channelId] || 0) > now)) {
           const g = guildOf(a.directory || [], back.channelId);
           console.log(`auto-join: ${nameOf(a)} dropped out of ${g?.name || back.channelId} when its page reloaded; going back`);
@@ -894,11 +895,11 @@ function autoJoinTick() {
     }
     const occ = occOf(status);
     // How long this account has been alone where it is (restarts when it changes channel).
-    const alone = isAlone({ occ, channelId: connected, ownHere: Math.max(0, (ownCount.get(connected) || 0) - 1) });
+    const alone = isAlone({ occ, channelId: connected, ownHere: Math.max(0, (ownCount.get(connected) || 0) - 1), minPeople: AUTOJOIN_MIN });
     if (!alone || r.aloneIn !== connected) { r.aloneIn = alone ? connected : null; r.aloneSince = alone ? now : 0; }
     const ownChannels = new Set([...connectedNow.keys()].filter((ch) => connectedNow.get(ch) !== a.id));
     const cands = candidates({ directory: (a.directory || []).filter((g) => !r.autoStop[g.id]), flags: channelFlags, occ,
-      ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now });
+      ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now, minPeople: AUTOJOIN_MIN });
     if (connected) {
       if (alone && cands.length && now - r.aloneSince >= AUTOJOIN_ALONE * 1000) {
         const to = busiestFirst(cands)[0];

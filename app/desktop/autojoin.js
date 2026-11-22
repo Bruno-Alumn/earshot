@@ -8,7 +8,7 @@
 // A channel qualifies when ALL of these hold:
 //   - it is flagged for auto-join (the blue icon),
 //   - it is one of the account's own servers' voice channels,
-//   - at least one real person is in it — people, not your own accounts,
+//   - at least minPeople real people are in it (main.js asks for 2) — people, not your own accounts,
 //   - it is not full (its user limit still has a free slot for us),
 //   - no other of your accounts is already connected to it (don't pile in),
 //   - it is not on cool-down (a join that just failed or a channel we just left),
@@ -16,7 +16,7 @@
 // Favourites (the yellow star) come first, then by name — so the list, and the
 // order the controller tries channels in, both put favourites up top.
 function candidates({ directory = [], flags = {}, occ = {}, ownChannels = new Set(),
-                      cooldowns = {}, currentChannelId = null, now = 0 } = {}) {
+                      cooldowns = {}, currentChannelId = null, now = 0, minPeople = 1 } = {}) {
   const out = [];
   const seen = new Set();
   for (const g of directory) {
@@ -29,7 +29,7 @@ function candidates({ directory = [], flags = {}, occ = {}, ownChannels = new Se
       if (ownChannels.has(c.id)) continue;                // another of your accounts holds it
       if ((cooldowns[c.id] || 0) > now) continue;         // recently failed or just left
       const o = occ[c.id];
-      if (!o || !(o.count >= 1)) continue;                // nobody (real) is in it
+      if (!o || !(o.count >= minPeople)) continue;        // too few (real) people in it
       if (o.limit > 0 && o.count >= o.limit) continue;    // full: no slot left for us
       out.push({ guildId: g.id, channelId: c.id, name: c.name || '', guildName: g.name || '',
                  fav: !!f.fav, count: o.count, limit: o.limit || 0 });
@@ -61,15 +61,15 @@ function connectedChannelId(status) {
       || (status && status.channel && status.channel.id) || null;
 }
 
-// Is an account left alone in its channel? True when nobody but your own accounts
-// is there. occ counts everyone except this account itself, so ownHere (how many
+// Is an account left alone in its channel? True when fewer than minPeople real
+// people are there (main.js asks for 2: one person on their own isn't a call). occ counts everyone except this account itself, so ownHere (how many
 // of your OTHER accounts sit in the same channel) is taken off. Unknown occupancy
 // (the page hasn't reported this channel yet) is never read as alone.
-function isAlone({ occ = {}, channelId = null, ownHere = 0 } = {}) {
+function isAlone({ occ = {}, channelId = null, ownHere = 0, minPeople = 1 } = {}) {
   if (!channelId) return false;
   const o = occ[channelId];
   if (!o || typeof o.count !== 'number') return false;
-  return o.count - ownHere <= 0;
+  return o.count - ownHere < minPeople;
 }
 
 // Where an account that was left alone should go: the most active open channel.
