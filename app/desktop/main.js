@@ -768,7 +768,7 @@ function transcribeChannel(guildId, channelId) {
   broadcast();
   return { account: a.id, label: nameOf(a) };
 }
-const JOIN_CSS = `button[aria-label*="Join Voice" i], button[aria-label*="Join Call" i], [class*="joinButton"], #join {
+const JOIN_CSS = `button[aria-label*="Join Voice" i], button[aria-label*="Join Call" i], [class*="joinButton"], [class*="joinButton"] button, #join {
   outline: 3px solid #f0b232 !important; outline-offset: 3px !important; box-shadow: 0 0 0 7px rgba(240,178,50,.35) !important; }`;
 async function showJoinHint(a) {
   const w = winOf(a.id); if (!w) return;
@@ -803,7 +803,14 @@ function occOf(status) {
 // "Transcribe a channel" highlights). true = a user gesture, so the browser
 // lets the audio context start; without it the capture stays suspended and the
 // channel would look silent for ever.
-const CLICK_JOIN_JS = `(() => { const el = document.querySelector('button[aria-label*="Join Voice" i], button[aria-label*="Join Call" i], [class*="joinButton"], #join'); if (el) { el.click(); return true; } return false; })()`;
+// Discord's real Join Voice button has no aria-label (just the text) and sits inside
+// a div whose class has "joinButton"; clicking that div does nothing, so find the
+// button itself by its text first.
+const CLICK_JOIN_JS = `(() => {
+  const want = /^(join voice|join call)$/i;
+  const el = [...document.querySelectorAll('button, [role="button"]')].find((e) => want.test((e.getAttribute('aria-label') || e.textContent || '').trim()))
+    || document.querySelector('button[aria-label*="Join Voice" i], button[aria-label*="Join Call" i], [class*="joinButton"] button, #join, [class*="joinButton"]');
+  if (el) { el.click(); return true; } return false; })()`;
 function autoJoinChannel(a, cand) {
   const r = R(a.id), w = winOf(a.id); if (!w) return;
   r.autoTarget = cand.channelId; r.autoTargetAt = Date.now(); r.autoJoined = null;
@@ -826,6 +833,9 @@ function autoJoinChannel(a, cand) {
 function autoJoinTick() {
   if (!appSettings().autoJoin || paused) return;
   const now = Date.now();
+  // Only the main account's window opens at start; Auto needs the others too, so
+  // open every signed-in account's window in the background.
+  for (const a of accounts) if (a.userId && !winOf(a.id)) { console.log(`auto-join: opening ${nameOf(a)} in the background`); createDiscord(a, { show: false }); }
   const connectedNow = new Map();                 // channel id -> which account holds it
   const ownCount = new Map();                     // channel id -> how many of your accounts are in it
   for (const a of accounts) {
