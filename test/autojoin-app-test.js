@@ -2,8 +2,9 @@
 // Three flagged channels in the fake Discord: "Standup" is a FAVOURITE but full,
 // "Voice 4" is open, "Side room" is left unflagged. The controller must land in
 // Voice 4 — proving it reads occupancy, skips the full channel even though it is
-// the favourite, and ignores the unflagged one. (The silence-hop and the pure
-// ranking are covered by test/autojoin-test.js.)
+// the favourite, and ignores the unflagged one. Then everyone leaves Voice 4 and
+// Standup's limit goes up to 5: the account, now alone, must move to Standup.
+// (The silence-hop and the pure ranking are covered by test/autojoin-test.js.)
 //   node test/autojoin-app-test.js <scratch-dir>
 const { _electron: electron } = require('playwright');
 const http = require('http'), fs = require('fs'), path = require('path');
@@ -41,7 +42,7 @@ const site = http.createServer((req, res) => {
   }));
   const app = await electron.launch({ executablePath: exe, args: [DESKTOP], timeout: 120000,
     env: { ...process.env, CT_TEST: '1', CT_PORT: String(PORT), CT_USER_DATA: ud, CT_DISCORD_URL: 'http://localhost:8899/',
-      CT_AUTOJOIN_TICK: '1500', CT_AUTOJOIN_IDLE: '600', CT_AUTOJOIN_COOLDOWN: '5000',
+      CT_AUTOJOIN_TICK: '1500', CT_AUTOJOIN_IDLE: '600', CT_AUTOJOIN_COOLDOWN: '5000', CT_AUTOJOIN_ALONE: '4',
       CT_SERVER_ARGS: `--out ${out} ${process.env.SERVER_ARGS || ''}` } });
   const logs = []; app.process().stdout.on('data', (d) => logs.push(String(d))); app.process().stderr.on('data', (d) => logs.push(String(d)));
 
@@ -51,7 +52,11 @@ const site = http.createServer((req, res) => {
   if (!win) { fail('account window missing'); console.log(logs.join('').split('\n').slice(-20).join('\n')); await app.close(); site.close(); process.exit(1); }
   for (let i = 0; i < 240 && !(await get('/api/state'))?.modelReady; i++) await sleep(500);
 
-  const seed = () => win.evaluate(({ v, s, sr }) => { window.__present = { [v]: ['511111111111111111', '522222222222222222'], [s]: ['533333333333333333'], [sr]: ['544444444444444444', '511111111111111111'] }; }, { v: VOICE4, s: STANDUP, sr: SIDE });
+  let stage = 1;
+  const seed = () => { const w = app.windows().find((x) => x.url().startsWith('http://localhost:8899')) || win;
+    return w.evaluate(({ v, s, sr, stage }) => { window.__present = stage === 1
+      ? { [v]: ['511111111111111111', '522222222222222222'], [s]: ['533333333333333333'], [sr]: ['544444444444444444', '511111111111111111'] }
+      : { [v]: [], [s]: ['533333333333333333'], [sr]: ['544444444444444444', '511111111111111111'] }; if (stage === 2) window.__limit = { [s]: 5 }; }, { v: VOICE4, s: STANDUP, sr: SIDE, stage }); };
   await seed();
   // Re-seed periodically: a navigation (when the controller joins) reloads the page and clears it.
   const seeder = setInterval(() => seed().catch(() => {}), 1000);
@@ -65,9 +70,27 @@ const site = http.createServer((req, res) => {
     if (ch) break;
     await sleep(1000);
   }
-  clearInterval(seeder);
   console.log('LANDED IN', JSON.stringify(ch));
   if (ch !== 'Voice 4') fail('auto-join should land in Voice 4 (open, flagged), not the full favourite or an unflagged channel; got ' + ch);
+
+  // Not alone (two people with it), so it must stay put past the alone window.
+  await sleep(9000);
+  { const st = await get('/api/state'); const a = (st?.accounts || []).find((x) => x.account === 'l1') || (st?.accounts || [])[0];
+    if (a?.channel?.name !== 'Voice 4') fail('with people in Voice 4 the account should stay; it went to ' + a?.channel?.name); }
+
+  // Everyone leaves Voice 4; Standup's limit goes up to 5, so it has room. Alone -> move.
+  stage = 2; await seed().catch(() => {});
+  let moved = null;
+  for (let i = 0; i < 60; i++) {
+    const st = await get('/api/state');
+    const a = (st?.accounts || []).find((x) => x.account === 'l1') || (st?.accounts || [])[0];
+    moved = a?.channel?.name || null;
+    if (moved && moved !== 'Voice 4') break;
+    await sleep(1000);
+  }
+  clearInterval(seeder);
+  console.log('ALONE, MOVED TO', JSON.stringify(moved));
+  if (moved !== 'Standup') fail('left alone in Voice 4, the account should move to Standup (open, flagged, has a person); got ' + moved);
 
   await app.evaluate(({ app }) => app.quit()); await sleep(2500); site.close();
   if (failed) { console.log(`\n${failed} FAILED`); console.log(logs.join('').split('\n').slice(-25).join('\n')); process.exit(1); }

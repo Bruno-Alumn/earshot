@@ -61,4 +61,22 @@ function connectedChannelId(status) {
       || (status && status.channel && status.channel.id) || null;
 }
 
-module.exports = { candidates, isIdle, connectedChannelId };
+// Is an account left alone in its channel? True when nobody but your own accounts
+// is there. occ counts everyone except this account itself, so ownHere (how many
+// of your OTHER accounts sit in the same channel) is taken off. Unknown occupancy
+// (the page hasn't reported this channel yet) is never read as alone.
+function isAlone({ occ = {}, channelId = null, ownHere = 0 } = {}) {
+  if (!channelId) return false;
+  const o = occ[channelId];
+  if (!o || typeof o.count !== 'number') return false;
+  return o.count - ownHere <= 0;
+}
+
+// Where an account that was left alone should go: the most active open channel.
+// Favourites still come first; then the one with the most people in it.
+function busiestFirst(cands = []) {
+  return [...cands].sort((a, b) => (Number(b.fav) - Number(a.fav))
+    || (b.count - a.count) || a.name.localeCompare(b.name) || a.channelId.localeCompare(b.channelId));
+}
+
+module.exports = { candidates, isIdle, connectedChannelId, isAlone, busiestFirst };

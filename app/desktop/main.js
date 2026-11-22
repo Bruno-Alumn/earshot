@@ -13,12 +13,13 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
-const { candidates, isIdle, connectedChannelId } = require('./autojoin');
+const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst } = require('./autojoin');
 
 // Auto-join: a free account hops into an open, flagged voice channel and moves
 // on after a stretch of silence. Timings are overridable for the test harness.
 const AUTOJOIN_IDLE = Number(process.env.CT_AUTOJOIN_IDLE) || 180;          // seconds of silence before moving on
 const AUTOJOIN_COOLDOWN = Number(process.env.CT_AUTOJOIN_COOLDOWN) || 120000; // ms to avoid a channel we just left or failed to join
+const AUTOJOIN_ALONE = Number(process.env.CT_AUTOJOIN_ALONE) || 60;         // seconds alone in a channel before moving on
 const AUTOJOIN_TICK = Number(process.env.CT_AUTOJOIN_TICK) || 8000;         // how often the controller re-evaluates
 
 const ROOT = path.resolve(__dirname, '..', '..');
@@ -774,8 +775,9 @@ function flaggedChannelIds(a) {
   for (const g of a.directory || []) for (const c of g.channels || []) if (channelFlags[c.id]?.auto) ids.push(c.id);
   return ids;
 }
-function sendWatchList(a) {
-  winOf(a.id)?.webContents.send('ct:watch-channels', flaggedChannelIds(a));
+function sendWatchList(a, connected = null) {      // plus the channel it sits in, to tell when it is left alone
+  const ids = flaggedChannelIds(a);
+  winOf(a.id)?.webContents.send('ct:watch-channels', connected ? [connected, ...ids.filter((id) => id !== connected)] : ids);
 }
 function occOf(status) {
   const m = {};
@@ -800,23 +802,28 @@ function autoJoinChannel(a, cand) {
 }
 // Runs on a timer. For each free account, join the best open flagged channel;
 // for a channel we auto-joined that has gone quiet, move on to the next one.
-// Channels joined by hand (or by "Transcribe a channel") are left alone.
+// An account left alone in any channel (nobody there but your own accounts) for
+// AUTOJOIN_ALONE seconds moves to the busiest open flagged channel none of your
+// other accounts is in. Otherwise channels joined by hand (or by "Transcribe a
+// channel") are left alone.
 function autoJoinTick() {
   if (!appSettings().autoJoin || paused) return;
   const now = Date.now();
   const connectedNow = new Map();                 // channel id -> which account holds it
+  const ownCount = new Map();                     // channel id -> how many of your accounts are in it
   for (const a of accounts) {
     const r = rt.get(a.id);
     if (!r?.status || now - (r.statusAt || 0) > 15000) continue;
-    const ch = connectedChannelId(r.status); if (ch) connectedNow.set(ch, a.id);
+    const ch = connectedChannelId(r.status);
+    if (ch) { connectedNow.set(ch, a.id); ownCount.set(ch, (ownCount.get(ch) || 0) + 1); }
   }
   for (const a of accounts) {
     const r = rt.get(a.id), w = winOf(a.id);
     if (!w || !r || !r.wsOpen || r.capturing === false || r.hint) continue;
     if (now - (r.statusAt || 0) > 15000 || !r.status) continue;
-    sendWatchList(a);                             // keep the page's watch list current across reloads
     const status = r.status;
     const connected = connectedChannelId(status);
+    sendWatchList(a, connected);                  // keep the page's watch list current across reloads
     r.cooldowns = r.cooldowns || {};
     for (const id of Object.keys(r.cooldowns)) if (r.cooldowns[id] <= now) delete r.cooldowns[id];
     // Resolve a join we started: confirm it, or give up and cool the channel down.
@@ -826,11 +833,23 @@ function autoJoinTick() {
       else continue;                              // still connecting; give it a moment
     }
     if (!connected) r.autoJoined = null;
+    const occ = occOf(status);
+    // How long this account has been alone where it is (restarts when it changes channel).
+    const alone = isAlone({ occ, channelId: connected, ownHere: Math.max(0, (ownCount.get(connected) || 0) - 1) });
+    if (!alone || r.aloneIn !== connected) { r.aloneIn = alone ? connected : null; r.aloneSince = alone ? now : 0; }
     const ownChannels = new Set([...connectedNow.keys()].filter((ch) => connectedNow.get(ch) !== a.id));
-    const cands = candidates({ directory: a.directory || [], flags: channelFlags, occ: occOf(status),
+    const cands = candidates({ directory: a.directory || [], flags: channelFlags, occ,
       ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now });
     if (connected) {
-      if (r.autoJoined === connected && cands.length
+      if (alone && cands.length && now - r.aloneSince >= AUTOJOIN_ALONE * 1000) {
+        const to = busiestFirst(cands)[0];
+        console.log(`auto-join: ${nameOf(a)} was alone in ${connected}, moving to ${to.name || to.channelId}`);
+        r.cooldowns[connected] = now + AUTOJOIN_COOLDOWN;
+        r.aloneIn = null; r.aloneSince = 0;
+        autoJoinChannel(a, to);
+        if (connectedNow.get(connected) === a.id) connectedNow.delete(connected);
+        connectedNow.set(to.channelId, a.id);
+      } else if (r.autoJoined === connected && cands.length
           && isIdle({ status, joinedAt: r.autoJoinAt || 0, now, idleSec: AUTOJOIN_IDLE })) {
         r.cooldowns[connected] = now + AUTOJOIN_COOLDOWN;   // don't bounce straight back to the quiet one
         r.autoJoined = null;

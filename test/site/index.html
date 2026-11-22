@@ -53,7 +53,7 @@ if (location.search.includes('nowl=1')) AudioWorklet.prototype.addModule = () =>
   // Join), so "connected to voice" is meaningful for the auto-join controller.
   class SelC extends Store { getVoiceChannelId() { return window.__joined ? window.__fakeChannel : null; } getChannelId() { return null; } }
   SelC.displayName = 'SelectedChannelStore';
-  class ChanC extends Store { getChannel(id) { return chans[id]; } }
+  class ChanC extends Store { getChannel(id) { const c = chans[id]; return c && window.__limit && id in window.__limit ? { ...c, userLimit: window.__limit[id] } : c; } }   // __limit: a test can raise a channel's user limit
   ChanC.displayName = 'ChannelStore';
   class GuildC extends Store { getGuild(id) { return { id, name: id.endsWith('2') ? 'Night Owls (test)' : 'Stone Harbor (test)' }; }
     getGuilds() { return { '900000000000000001': this.getGuild('900000000000000001'), '900000000000000002': this.getGuild('900000000000000002') }; } }

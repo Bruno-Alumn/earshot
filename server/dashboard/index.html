@@ -2395,7 +2395,7 @@ async function renderSettingsPage() {
       ${as ? `<div class="sh">App</div>
         ${tog('app:openAtLogin', 'Open at login', as.openAtLogin, 'Starts transcribing as soon as you sign in to your computer.')}
         ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}
-        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
+        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence, or after a minute alone in any channel. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
       ${tog('ui:compact', 'Compact view', compact, 'Everything on one screen.')}
       <div class="sh">Transcription</div>
       <div class="srow"><span><b>Speech model</b><small>${esc(model)}</small></span><button data-a="model">Change…</button></div>
