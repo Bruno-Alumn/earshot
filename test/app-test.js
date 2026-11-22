@@ -104,9 +104,9 @@ const fail = (msg) => { console.log('FAIL', msg); process.exitCode = 1; };
     console.log('DASH', JSON.stringify(d));
     if (d.ctApp !== 'object') fail('dashboard bridge missing');
     await dash.screenshot({ path: path.join(SCRATCH, 'app-dash.png') });
-    await dash.click('#p-ext'); await sleep(400);
+    await dash.click('#p-status'); await sleep(400);   // one status button (it replaced the server, Discord and model pills)
     await dash.screenshot({ path: path.join(SCRATCH, 'app-dash-pop.png') });
-    console.log('PILL', await dash.evaluate(() => document.querySelector('#p-ext').innerText + ' | discord button visible: ' + !document.querySelector('#p-discord').hidden));
+    console.log('PILL', await dash.evaluate(() => document.querySelector('#p-status').innerText + ' | discord button visible: ' + !document.querySelector('#p-discord').hidden));
     // Settings: open, turn personality reads off, check the server and the page follow
     await dash.evaluate(() => window.openSettings()); await sleep(800);
     await dash.screenshot({ path: path.join(SCRATCH, 'app-settings.png') });
