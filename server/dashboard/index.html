@@ -1070,6 +1070,7 @@ select, input[type=search], .pp-list input, .srow .keyin input, .srow.vocab text
     <div class="where" id="where"></div>
     <div class="pills">
       <button class="pill" id="p-status" aria-haspopup="dialog" aria-expanded="false" aria-controls="pop" title="Calls, server and speech model"><span class="dot"></span><span>Connecting…</span></button>
+      <button class="pill" id="p-auto" hidden role="switch" aria-checked="false"><span class="dot"></span><span id="p-auto-t">Auto</span></button>
       <button class="pill" id="p-mute" hidden title="Mute the call for you; transcription still hears everyone (⌘⇧M / Ctrl+Shift+M)"><span id="p-mute-ic"></span><span id="p-mute-t">Mute call</span></button>
       <button class="pill discord-btn" id="p-discord" hidden title="Show the Discord window (⌘D / Ctrl+D)"><svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M19.3 5.3A16.6 16.6 0 0 0 15.2 4l-.5 1a15 15 0 0 0-5.4 0L8.8 4a16.5 16.5 0 0 0-4.1 1.3C2.1 9.2 1.4 13 1.7 16.7a16.7 16.7 0 0 0 5 2.6l1.1-1.7a11 11 0 0 1-1.7-.8l.4-.3a11.9 11.9 0 0 0 11 0l.4.3-1.7.8 1.1 1.7a16.6 16.6 0 0 0 5-2.6c.4-4.3-.7-8-3-11.4ZM8.7 14.5c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm6.6 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg><span>Discord</span></button>
     </div>
@@ -1782,7 +1783,7 @@ let inApp = !!desk || !!window.webkit?.messageHandlers?.app || !!window.pywebvie
 addEventListener('pywebviewready', () => { inApp = true; refreshPop?.(); });
 const appCmd = (action) => desk ? desk.server(action) : window.pywebview?.api ? window.pywebview.api.server(action) : window.webkit.messageHandlers.app.postMessage({ action });
 let appState = {};
-desk?.onState((s) => { appState = s || {}; renderState?.(); refreshPop?.(); renderMute?.(); });
+desk?.onState((s) => { appState = s || {}; renderState?.(); refreshPop?.(); renderMute?.(); renderAuto?.(); });
 // Save a file: native Save dialog in the apps, a download in a browser.
 function saveFile(name, content, mime = 'text/plain') {
   if (desk) return desk.save(name, content);
@@ -2125,6 +2126,21 @@ $('#pop').addEventListener('click', (e) => {
 if (desk) {
   $('#p-discord').hidden = false; $('#p-discord').onclick = () => desk.openDiscord();
   $('#p-mute').hidden = false; $('#p-mute').onclick = () => desk.setMuted(!appState.muted);
+  $('#p-auto').hidden = false;
+  $('#p-auto').onclick = async () => { await desk.setAppSetting('autoJoin', !appState.autoJoin); };
+}
+// The Auto switch: on, your accounts join, leave and move between the channels you
+// flagged by themselves (the same setting as Auto-join in Settings).
+function renderAuto() {
+  if (!desk) return;
+  const on = !!appState.autoJoin, b = $('#p-auto');
+  const stops = on ? (appState.accounts || []).flatMap((a) => (a.autoStopped || []).map((x) => ({ who: a.label, ...x }))) : [];
+  $('#p-auto-t').textContent = stops.length ? `Auto · ${stops.length} stopped` : 'Auto';
+  b.classList.toggle('ok', on && !stops.length); b.classList.toggle('warn', on && !!stops.length);
+  b.setAttribute('aria-checked', String(on));
+  b.title = !on ? 'Turn on Auto: your accounts join, leave and move between the channels you flagged (the blue icon in Channels) on their own'
+    : (stops.length ? stops.map((x) => `${x.who} stopped in ${x.guildName || 'a server'}: it was taken out of voice without the app moving it.`).join('\n') + '\nTurn Auto off and on again to start it there.\n\n' : '')
+      + 'Turn off Auto';
 }
 const ICON_SOUND = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7.4 2.6a.6.6 0 0 1 1 .45v9.9a.6.6 0 0 1-1 .45L4.6 10.9H2.6a.6.6 0 0 1-.6-.6V5.7c0-.33.27-.6.6-.6h2l2.8-2.5Zm3.2 2.1a.6.6 0 0 1 .85 0 4.6 4.6 0 0 1 0 6.6.6.6 0 1 1-.85-.85 3.4 3.4 0 0 0 0-4.9.6.6 0 0 1 0-.85Z"/></svg>';
 const ICON_MUTED = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M7.4 2.6a.6.6 0 0 1 1 .45v9.9a.6.6 0 0 1-1 .45L4.6 10.9H2.6a.6.6 0 0 1-.6-.6V5.7c0-.33.27-.6.6-.6h2l2.8-2.5Zm3.03 3.13a.6.6 0 0 1 .85 0L12.5 6.95l1.22-1.22a.6.6 0 1 1 .85.85L13.35 7.8l1.22 1.22a.6.6 0 1 1-.85.85L12.5 8.65l-1.22 1.22a.6.6 0 1 1-.85-.85l1.22-1.22-1.22-1.22a.6.6 0 0 1 0-.85Z"/></svg>';
@@ -3219,7 +3235,7 @@ async function renderSettingsPage(keepScroll, keyNote) {
   const app = `
       ${as ? `${tog('app:openAtLogin', 'Open at login', as.openAtLogin, 'Starts transcribing as soon as you sign in to your computer.')}
         ${tog('app:showCallWindowOnStart', 'Show the call window on start', as.showCallWindowOnStart, 'Off: it opens hidden and stays connected.')}
-        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence, or after a minute alone in any channel. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
+        ${tog('app:autoJoin', 'Auto-join open channels', as.autoJoin, 'A free account joins a channel you flagged (the blue icon in Channels) while it is open and not full, and moves on after ' + Math.round((window.__autoIdle || 180) / 60) + ' min of silence, or after a minute alone in any channel. If its page reloads or crashes it goes back; if it is kicked or disconnected it stops in that server until Auto is turned off and on. The Auto switch at the top turns this on and off too. Discord\'s terms forbid automating accounts, so use your own judgement. Off by default.')}` : ''}
       ${inApp ? tog('ui:compact', 'Compact view', compact, 'Everything on one screen.') : ''}
       ${'voiceWatch' in ss ? sel('voiceWatch', 'Who is in voice', ss.voiceWatch || 'recorded', [['recorded', 'Servers I record'], ['all', 'All my servers'], ['off', 'Off']], 'Lists who is in each voice channel, under Calls and in People. It only reads what Discord already shows the main account.') : ''}
       ${sub('Updates')}

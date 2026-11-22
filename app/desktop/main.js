@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
-const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst } = require('./autojoin');
+const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf } = require('./autojoin');
 
 // Auto-join: a free account hops into an open, flagged voice channel and moves
 // on after a stretch of silence. Timings are overridable for the test harness.
@@ -275,13 +275,14 @@ function accountSummary(a) {
     open: !!winOf(a.id), visible: !!winOf(a.id)?.isVisible(), connected: !!r.wsOpen, muted: !!a.muted,
     inCall: fresh && !!s.pcs && !!s.tracks, channel: fresh ? s.channel || null : null, capturing: r.capturing !== false,
     deafened: !!(self && (self.deaf || self.selfDeaf)), hint: r.hint || null,
+    autoStopped: Object.values(r.autoStop || {}),
     guilds: (a.directory || []).length,
     proxy: px.ok && (px.proxy || px.pac) ? redactProxy(a.proxy) : '',
     proxyMode: !px.ok ? 'invalid' : px.proxy ? 'proxy' : px.pac ? 'pac' : px.direct ? 'direct' : 'system' };
 }
 const appState = () => {
   const m = mainAccount();
-  return { discordOpen: !!winOf(m.id)?.isVisible(), paused, muted: !!m.muted,
+  return { discordOpen: !!winOf(m.id)?.isVisible(), paused, muted: !!m.muted, autoJoin: appSettings().autoJoin,
     connected: accounts.some((a) => rt.get(a.id)?.wsOpen), accounts: accounts.map(accountSummary) };
 };
 
@@ -292,6 +293,7 @@ function appSettings() { const s = loadSettings(); return Object.fromEntries(Obj
 function setAppSetting(key, value) {
   if (!(key in APP_DEFAULTS)) return appSettings();
   try { fs.writeFileSync(path.join(app.getPath('userData'), 'settings.json'), JSON.stringify({ ...loadSettings(), [key]: !!value })); } catch {}
+  if (key === 'autoJoin') { for (const r of rt.values()) { r.autoStop = {}; r.lastIn = null; } setTimeout(broadcast, 0); }
   if (key === 'openAtLogin' && !TEST) {
     // Windows runs the app as electron.exe <app folder>; the Mac bundle starts itself.
     app.setLoginItemSettings(IS_WIN ? { openAtLogin: !!value, path: process.execPath, args: [__dirname] } : { openAtLogin: !!value });
@@ -671,6 +673,18 @@ function createDiscord(a, { show = true, url } = {}) {
   wc.on('will-navigate', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.on('will-redirect', (e, u) => { if (!isDiscordUrl(u)) { e.preventDefault(); openExternal(u); } });
   wc.setWindowOpenHandler(({ url: u }) => { openExternal(u); return { action: 'deny' }; });
+  // Auto-join: note every reload, so a voice drop it caused reads as ours and not as
+  // a kick; and bring a crashed page back (auto-join then rejoins its channel).
+  wc.on('did-start-navigation', (d) => { if (d?.isMainFrame !== false && !d?.isSameDocument) R(a.id).navAt = Date.now(); });
+  wc.on('render-process-gone', (_e, det) => {
+    R(a.id).navAt = Date.now();
+    console.log(`page for ${nameOf(a)} went away (${det?.reason}); reloading it`);
+    if (det?.reason !== 'clean-exit' && !quitting) setTimeout(() => {
+      if (w.isDestroyed()) return;
+      R(a.id).navAt = Date.now();
+      w.loadURL(wc.getURL() || discordUrl(a)).catch(() => {});
+    }, 3000);
+  });
   w.on('page-title-updated', (e) => e.preventDefault());      // keep "Discord · <account>"
   if (a.role === 'listener') wc.on('did-finish-load', () => wc.insertCSS('*,*::before,*::after{animation-duration:0s!important;transition-duration:0s!important}').catch(() => {}));
   w.on('close', (e) => { if (!quitting && acct(a.id)) { e.preventDefault(); w.hide(); broadcast(); } });   // stay in the call
@@ -745,6 +759,7 @@ function transcribeChannel(guildId, channelId) {
   const r = R(a.id);
   const url = discordUrl(a, `/channels/${guildId}/${channelId}`);
   r.hint = { guildId, channelId, at: Date.now() };
+  r.lastIn = null;                               // you picked a channel: don't rejoin the old one
   const w = winOf(a.id);
   if (w) w.loadURL(url).catch(() => {}); else createDiscord(a, { url });
   const ww = winOf(a.id);
@@ -801,11 +816,13 @@ function autoJoinChannel(a, cand) {
   broadcast();
 }
 // Runs on a timer. For each free account, join the best open flagged channel;
-// for a channel we auto-joined that has gone quiet, move on to the next one.
+// for a channel that has gone quiet, move on to the next one.
 // An account left alone in any channel (nobody there but your own accounts) for
-// AUTOJOIN_ALONE seconds moves to the busiest open flagged channel none of your
-// other accounts is in. Otherwise channels joined by hand (or by "Transcribe a
-// channel") are left alone.
+// AUTOJOIN_ALONE seconds, or in a channel silent for AUTOJOIN_IDLE, moves to the
+// best open flagged channel none of your other accounts is in. One that drops out
+// because its page reloaded or crashed goes back; one taken out of voice any other
+// way (a kick, a moderator's disconnect, your own Leave) stops auto-joining in that
+// server until Auto is turned off and on again.
 function autoJoinTick() {
   if (!appSettings().autoJoin || paused) return;
   const now = Date.now();
@@ -823,7 +840,7 @@ function autoJoinTick() {
     if (now - (r.statusAt || 0) > 15000 || !r.status) continue;
     const status = r.status;
     const connected = connectedChannelId(status);
-    sendWatchList(a, connected);                  // keep the page's watch list current across reloads
+    sendWatchList(a, connected || r.lastIn?.channelId || null);                  // keep the page's watch list current across reloads
     r.cooldowns = r.cooldowns || {};
     for (const id of Object.keys(r.cooldowns)) if (r.cooldowns[id] <= now) delete r.cooldowns[id];
     // Resolve a join we started: confirm it, or give up and cool the channel down.
@@ -833,12 +850,44 @@ function autoJoinTick() {
       else continue;                              // still connecting; give it a moment
     }
     if (!connected) r.autoJoined = null;
+    r.autoStop = r.autoStop || {};
+    // Left voice without the app moving it: a reload or crash goes back; a kick,
+    // a moderator's disconnect or your own Leave stops auto-join in that server.
+    if (!connected && r.lastIn) {
+      const why = classifyLeave({ lastIn: r.lastIn, navAt: r.navAt || 0 }), back = r.lastIn;
+      r.lastIn = null;
+      if (why === 'removed') {
+        const g = guildOf(a.directory || [], back.channelId);
+        const gid = back.guildId || g?.guildId;
+        if (gid) r.autoStop[gid] = { guildId: gid, guildName: g?.guildName || '', channelName: g?.name || '', at: now };
+        console.log(`auto-join: ${nameOf(a)} left voice in ${g?.guildName || gid} without the app moving it; stopped there`);
+        broadcast();
+      } else {
+        const o = occOf(status)[back.channelId];
+        const held = connectedNow.has(back.channelId) && connectedNow.get(back.channelId) !== a.id;
+        const open = !o || (o.count >= 1 && !(o.limit > 0 && o.count >= o.limit));
+        if (!held && open && !((r.cooldowns[back.channelId] || 0) > now)) {
+          const g = guildOf(a.directory || [], back.channelId);
+          console.log(`auto-join: ${nameOf(a)} dropped out of ${g?.name || back.channelId} when its page reloaded; going back`);
+          autoJoinChannel(a, { guildId: back.guildId || g?.guildId, channelId: back.channelId, name: g?.name || '' });
+          connectedNow.set(back.channelId, a.id);
+          continue;
+        }
+      }
+    }
+    if (connected !== r.inCh) { r.inCh = connected; r.inSince = now; }   // when it got to this channel, however it got there
+    if (connected) {
+      const g = guildOf(a.directory || [], connected);
+      // at = when the page last said so (not now): a status sent before a reload must
+      // not make the reload look older than the last sighting.
+      r.lastIn = { channelId: connected, guildId: g?.guildId || r.lastIn?.guildId || null, at: r.statusAt || now };
+    }
     const occ = occOf(status);
     // How long this account has been alone where it is (restarts when it changes channel).
     const alone = isAlone({ occ, channelId: connected, ownHere: Math.max(0, (ownCount.get(connected) || 0) - 1) });
     if (!alone || r.aloneIn !== connected) { r.aloneIn = alone ? connected : null; r.aloneSince = alone ? now : 0; }
     const ownChannels = new Set([...connectedNow.keys()].filter((ch) => connectedNow.get(ch) !== a.id));
-    const cands = candidates({ directory: a.directory || [], flags: channelFlags, occ,
+    const cands = candidates({ directory: (a.directory || []).filter((g) => !r.autoStop[g.id]), flags: channelFlags, occ,
       ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now });
     if (connected) {
       if (alone && cands.length && now - r.aloneSince >= AUTOJOIN_ALONE * 1000) {
@@ -849,8 +898,8 @@ function autoJoinTick() {
         autoJoinChannel(a, to);
         if (connectedNow.get(connected) === a.id) connectedNow.delete(connected);
         connectedNow.set(to.channelId, a.id);
-      } else if (r.autoJoined === connected && cands.length
-          && isIdle({ status, joinedAt: r.autoJoinAt || 0, now, idleSec: AUTOJOIN_IDLE })) {
+      } else if (cands.length
+          && isIdle({ status, joinedAt: Math.max(r.autoJoinAt || 0, r.inSince || 0), now, idleSec: AUTOJOIN_IDLE })) {
         r.cooldowns[connected] = now + AUTOJOIN_COOLDOWN;   // don't bounce straight back to the quiet one
         r.autoJoined = null;
         autoJoinChannel(a, cands[0]);

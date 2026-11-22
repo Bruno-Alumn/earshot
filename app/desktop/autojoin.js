@@ -79,4 +79,20 @@ function busiestFirst(cands = []) {
     || (b.count - a.count) || a.name.localeCompare(b.name) || a.channelId.localeCompare(b.channelId));
 }
 
-module.exports = { candidates, isIdle, connectedChannelId, isAlone, busiestFirst };
+// An account that was in a channel is not any more, and the app didn't move it.
+// If its page reloaded or crashed since it was last seen there, the drop was on
+// our side: 'reloaded', and it may go back. Otherwise someone or something took
+// it out of voice (a moderator's kick or disconnect, or you clicking Leave):
+// 'removed', and auto-join stops for that account in that server.
+function classifyLeave({ lastIn = null, navAt = 0 } = {}) {
+  if (!lastIn) return null;
+  return navAt > (lastIn.at || 0) ? 'reloaded' : 'removed';
+}
+
+// The server a channel belongs to, from an account's directory.
+function guildOf(directory = [], channelId) {
+  for (const g of directory) for (const c of (g.channels || [])) if (c.id === channelId) return { guildId: g.id, guildName: g.name || '', name: c.name || '' };
+  return null;
+}
+
+module.exports = { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf };

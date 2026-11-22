@@ -1,7 +1,7 @@
 // Unit test for the pure auto-join decision logic (app/desktop/autojoin.js).
 //   node test/autojoin-test.js
 const assert = require('assert');
-const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst } = require('../app/desktop/autojoin.js');
+const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf } = require('../app/desktop/autojoin.js');
 
 let failed = false;
 const ok = (name, cond) => { if (cond) console.log('  ok  ' + name); else { console.log('  FAIL ' + name); failed = true; } };
@@ -80,6 +80,12 @@ const busy = busiestFirst(candidates({ directory, flags, occ, now: 1000, cooldow
 ok('busiest open channel first', busy[0] && busy[0].channelId === 'cHot');
 const busy2 = busiestFirst([{ channelId: 'a', name: 'A', fav: false, count: 2 }, { channelId: 'b', name: 'B', fav: false, count: 6 }, { channelId: 'f', name: 'F', fav: true, count: 1 }]);
 ok('favourite, then most people', busy2.map((c) => c.channelId).join() === 'f,b,a');
+
+// 10. classifyLeave: a reload since we last saw it there is ours; anything else is a removal.
+ok('page reloaded: goes back', classifyLeave({ lastIn: { channelId: 'c1', at: 1000 }, navAt: 2000 }) === 'reloaded');
+ok('no reload: removed (kick, disconnect, Leave)', classifyLeave({ lastIn: { channelId: 'c1', at: 2000 }, navAt: 1000 }) === 'removed');
+ok('never in a channel: nothing to do', classifyLeave({ lastIn: null, navAt: 5 }) === null);
+ok('guildOf finds the server', guildOf(directory, 'cHot')?.guildId === 'g1' && guildOf(directory, 'nope') === null);
 
 console.log(failed ? '\nFAILED' : '\nPASS');
 process.exit(failed ? 1 : 0);
