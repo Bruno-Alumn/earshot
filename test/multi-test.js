@@ -97,7 +97,7 @@ async function transcribeFlow() {
   const info = await dash.evaluate(() => window.ctApp.accounts());
   console.log('DIRECTORY', JSON.stringify(info.guilds.map((g) => `${g.name}: ${g.channels.map((c) => c.name).join('/')} [${g.accounts.join(',')}]`)));
   if (!info.guilds.some((g) => g.channels.some((c) => c.name === 'Voice 4'))) fail('channel directory missing');
-  await dash.click('#p-ext'); await sleep(500);
+  await dash.click('#p-status'); await sleep(500);     // the one status button (it replaced the Server/Discord/Model pills)
   await dash.screenshot({ path: path.join(SCRATCH, 'accounts-popover.png') });
   await dash.evaluate(() => window.openTranscribe()); await sleep(600);
   await dash.screenshot({ path: path.join(SCRATCH, 'transcribe-picker.png') });
