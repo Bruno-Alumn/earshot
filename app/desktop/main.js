@@ -395,6 +395,11 @@ ipcMain.on('ct:hook-status', (e, s) => {
   const wasIn = !!(r.status?.pcs && r.status?.tracks);
   r.status = s; r.statusAt = Date.now();
   const me = s.me;
+  // Signed in but no server list: the page was read while signed out (the list is
+  // otherwise only re-read every 10 minutes). Ask again, at most every 30 seconds.
+  if (me?.id && !(a.directory || []).length && Date.now() - (r.dirAskedAt || 0) > 30000) {
+    r.dirAskedAt = Date.now(); winOf(a.id)?.webContents.send('ct:want-directory');
+  }
   if (me?.id && (me.id !== a.userId || (me.name && me.name !== a.label))) {
     a.userId = me.id; a.label = me.name || a.label; saveAccounts(); hello(a); buildMenu(); broadcast();
     if (!r.hint) winOf(a.id)?.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
