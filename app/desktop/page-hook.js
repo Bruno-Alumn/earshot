@@ -543,7 +543,9 @@
       v: H.version, loadedAt: H.loadedAt, pcs: H.pcs, tracks: H.tracks, capture: H.capture,
       activeTracks: [...readers.values()].filter((r) => r.isActive?.()).length,
       silent: H.silent || 0, loudMax: +(H.loudMax || 0).toFixed(3), ctxRate: ctx?.sampleRate, ctxBase: ctx ? +(ctx.baseLatency || 0).toFixed(3) : null, frames: H.frames || 0, chunks: H.chunks,
-      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], names: H.names, nameVia: H.nameVia, accounts: H.accounts || {},
+      ctx: ctx ? ctx.state : 'none', enabled, live: H.live, liveIds: inChannelIds() ?? [...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))], nNames: idName.size,   // the full name map stays in H.names (nothing downstream reads it; it was ~66 KB every 5 s)
+      nameVia: Object.fromEntries([...new Set([...readers.values()].map((r) => r.userId).filter(Boolean))].filter((id) => H.nameVia?.[id]).map((id) => [id, H.nameVia[id]])),
+      accounts: H.accounts || {},
       badStreamIds: H.badStreamIds, dupDropped: H.dupDropped || 0, errors: [...new Set(H.errors)].slice(-5),
       storeDiag: H.storeDiag, unnamedRows: H.unnamedRows, channel: currentChannel(), me: meInfo(),
       occ: watchIds.length ? watchIds.map(channelOcc) : undefined,

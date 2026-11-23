@@ -83,7 +83,7 @@ body {
   padding: 5px 8px 5px 18px; cursor: pointer; text-align: left; border-radius: 8px; font-size: 12.5px; font-weight: 600; }
 .chn:hover { background: var(--surface-2); color: var(--text-primary); }
 .chn svg { width: 14px; height: 14px; flex: none; color: var(--text-muted); }
-.chn .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; }
+.chn .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); }
 /* Voice now: who is in the server's voice channels, from Discord's own member list */
 .chn.vnow-h { color: var(--text-muted); font-size: 11.5px; letter-spacing: .02em; }
 .chn.vnow-h .cn { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -98,7 +98,7 @@ button.vt:hover { color: var(--text-primary); }
 .vt svg { width: 13px; height: 13px; flex: none; color: var(--text-muted); }
 .vt .vn { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
 .vt .vc { flex: none; color: var(--text-muted); font-weight: 400; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.vt .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; flex: none; }
+.vt .live { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); flex: none; }
 .vp { display: flex; flex-wrap: wrap; gap: 1px 8px; padding: 2px 0 0 19px; font-size: 12px; color: var(--text-muted); min-width: 0; }
 .vpn { max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 button.vpn, .vmore { font: inherit; font-size: 12px; background: none; border: 0; padding: 0; cursor: pointer; border-radius: 4px; text-align: left; }
@@ -366,8 +366,7 @@ button.qa:hover { background: var(--surface-2); color: var(--text-primary); }
 .line.go { animation: flash 1.6s ease-out; }
 mark { background: color-mix(in srgb, var(--warn) 35%, transparent); color: inherit; border-radius: 3px; padding: 0 1px; }
 .empty { color: var(--text-muted); text-align: center; padding: 40px 10px; }
-.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); animation: pulse 1.6s infinite; }
-@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }   /* steady, not pulsing: a pulse redraws the window ~100 times a second */
 .jump { position: sticky; bottom: 8px; margin: 0 auto; display: none; background: var(--accent-fill); color: #fff; border: 0; border-radius: 999px;
   padding: 6px 12px; font: inherit; font-size: 12px; cursor: pointer; box-shadow: var(--shadow); }
 
@@ -853,6 +852,77 @@ body.compact .kpi .sub { display: none; }
   body:not(.compact) :is(.feed, .lcol, .c-talk .bars, .card.grow.c-talk > .body, .card.grow.c-tl > .body, .c-tl:not(.grow) > .body) { overscroll-behavior-y: auto; }
   body:not(.compact) .card[data-panel="transcript"] { height: 60vh; }
 }
+.modal.pxmodal { max-height: calc(100vh - 32px); overflow-y: auto; }
+.modal.pxmodal h4.sh2 { margin: 14px 0 6px; }
+.dform { display: flex; flex-direction: column; gap: 6px; }
+.drow { display: grid; grid-template-columns: 100px 1fr; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text-secondary); }
+.dfield { display: flex; gap: 4px; min-width: 0; }
+.dfield .pxin { flex: 1 1 auto; min-width: 0; padding: 6px 9px; }
+.dfield button { font: inherit; font-size: 12px; padding: 4px 9px; min-height: 30px; white-space: nowrap; }
+.dfield input[data-k="password"] { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+@media (max-width: 560px) { .drow { grid-template-columns: 1fr; } .dfield { flex-wrap: wrap; } }
+/* proxy chooser (account Proxy dialog, Add/Create account) */
+.modal.pxmodal { width: min(620px, calc(100vw - 32px)); }
+.pxmode { margin: 10px 0; width: max-content; max-width: 100%; }
+.pxmode button { font-size: 12.5px; padding: 5px 12px; min-height: 28px; }
+.pxbody .pnote:first-child { margin-top: 0; }
+.wskey .pnote { margin: 0 0 8px; }
+.wskrow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+.wskrow .pxin { flex: 1 1 240px; }
+.wsfilter { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.wsfilter select, .wsfilter input[type=search] { font: inherit; font-size: 12.5px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; min-height: 28px; }
+.wsfilter input[type=search] { flex: 1 1 160px; }
+.wsck { font-size: 12px; color: var(--text-secondary); display: inline-flex; gap: 5px; align-items: center; }
+.wslist { max-height: min(46vh, 340px); overflow-y: auto; border: 1px solid var(--border); border-radius: 10px; padding: 3px; display: flex; flex-direction: column; gap: 1px; }
+.wsrow { display: grid; grid-template-columns: 34px minmax(80px, 1fr) 150px minmax(0, 190px); gap: 8px; align-items: center; text-align: left; font: inherit; font-size: 12.5px; padding: 6px 8px; min-height: 32px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--text-primary); cursor: pointer; box-shadow: none; }
+.wsrow:hover { background: var(--surface-2); }
+.wsrow.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface-1)); }
+.wscc { font-size: 11px; font-weight: 650; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 5px; text-align: center; padding: 1px 0; }
+.wsplace { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wsaddr { color: var(--text-muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wstags { display: flex; gap: 4px; justify-content: flex-end; flex-wrap: wrap; }
+.wstags em { font-style: normal; font-size: 11px; color: var(--text-secondary); background: var(--surface-2); border-radius: 5px; padding: 1px 6px; white-space: nowrap; }
+.wstags em.bad { color: var(--bad); }
+@media (max-width: 560px) { .wsrow { grid-template-columns: 30px 1fr; } .wsaddr, .wstags { grid-column: 2; justify-content: flex-start; } }
+/* study: patterns in what was said */
+.itiles { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin: 4px 0 6px; }
+.itile { padding: 8px 10px; }
+.itile > b { display: block; font-size: 20px; font-weight: 650; color: var(--text-primary); font-variant-numeric: tabular-nums; margin-top: 2px; }
+.itile > small { font-size: 11.5px; color: var(--text-muted); }
+.ifind { margin: 0; padding-left: 18px; max-width: 760px; font-size: 13px; line-height: 1.55; color: var(--text-secondary); }
+.ifind li { margin: 0 0 5px; }
+.ifind li::marker { color: var(--text-muted); }
+.ifind .linkbtn, .ifind b { color: var(--text-primary); }
+#view-study .ichart { max-width: 760px; }
+#view-study .ibar { fill: var(--s1); }
+#view-study .icell { fill: var(--s1); }
+#view-study .icell.zero { fill: var(--grid); }
+.ibars { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 18px; max-width: 900px; }
+.ibrow { display: grid; grid-template-columns: 110px 1fr 52px; align-items: center; gap: 8px; font: inherit; font-size: 12.5px; text-align: left; background: none; border: 0; border-radius: 6px; padding: 3px 4px; min-height: 24px; color: var(--text-primary); cursor: pointer; box-shadow: none; }
+.ibrow:hover { background: var(--surface-2); }
+.ibrow span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ibrow i { display: block; height: 8px; border-radius: 0 4px 4px 0; background: var(--s1); min-width: 2px; }
+.ibrow b { font-weight: 500; color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+.iwords { display: flex; flex-wrap: wrap; gap: 6px; max-width: 900px; }
+.iword { font: inherit; font-size: 12.5px; display: inline-flex; align-items: baseline; gap: 6px; padding: 3px 10px; min-height: 26px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-primary); cursor: pointer; }
+.iword:hover { border-color: var(--text-muted); }
+.iword small { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.stable .iword { padding: 1px 8px; min-height: 22px; }
+.isig .iw { display: inline-block; padding: 1px 7px; margin: 1px 2px 1px 0; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--grid); font-size: 12px; }
+.itable-wrap { overflow-x: auto; }
+.itable th { white-space: nowrap; padding: 3px 4px; }
+.itable td { white-space: nowrap; }
+.isort { font: inherit; font-size: 11.5px; font-weight: 600; color: var(--text-muted); background: none; border: 0; padding: 2px 2px; min-height: 24px; cursor: pointer; box-shadow: none; }
+.isort:hover, .isort.on { color: var(--text-primary); }
+.ipairs { display: flex; flex-direction: column; gap: 4px; max-width: 760px; }
+.ipair { display: grid; grid-template-columns: minmax(180px, 1.2fr) 1fr 48px; align-items: center; gap: 10px; font-size: 12.5px; }
+.ipair > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ipair i { display: flex; gap: 2px; height: 10px; }
+.ipair em { display: block; height: 100%; background: var(--s1); border-radius: 0; min-width: 2px; }
+.ipair em:first-child { border-radius: 4px 0 0 4px; }
+.ipair em.b { background: var(--s2); border-radius: 0 4px 4px 0; }
+.ipair b { font-weight: 500; color: var(--text-secondary); text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 640px) { .ibrow { grid-template-columns: 90px 1fr 44px; } .ipair { grid-template-columns: 1fr 80px 40px; } }
 /* settings and study: readable line lengths on wide windows */
 .settings-page .sub-body { max-width: 760px; }
 :is(#view-study, #view-people) .sdumb, :is(#view-study, #view-people) .sscatter { max-width: 760px; }
@@ -906,7 +976,6 @@ h2.sh2, h4.sh2 { display: block; }
 .pd-lines-h { margin: 14px 0 6px; }
 .pd-lines-h input { font: inherit; font-size: 12.5px; color: var(--text-primary); background: var(--surface-1); border: 1px solid var(--border-strong, var(--border)); border-radius: 8px; padding: 5px 9px; width: min(260px, 100%); }
 .pp-detail .plines { flex: 1 0 auto; height: min(70vh, 640px); min-height: 220px; }
-.no-persona #rail [data-view="study"] { display: none; }
 @media (max-width: 1000px) { .pp-detail { height: auto; overflow: visible; } .pp-detail .plines { height: 60vh; } }
 /* settings: one page, three sections, jump links on the left */
 .settings-page h1.subnav-h { margin: 0; font-size: 11px; line-height: inherit; }
@@ -1050,7 +1119,7 @@ select, input[type=search], .pp-list input, .srow .keyin input, .srow.vocab text
   <img src="/logo.png" class="rail-logo" width="28" height="28" alt="Earshot">
   <button data-view="calls" title="Calls and the live dashboard (⌘1 / Ctrl+1)" aria-label="Calls"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4.5h10M3 8h10M3 11.5h6" /></svg><span>Calls</span></button>
   <button data-view="people" title="Everyone who has spoken (⌘2 / Ctrl+2)" aria-label="People"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.5 13.5c0-2.2 1.8-4 4-4s4 1.8 4 4M11 7a2 2 0 1 0 0-4M12 9.6c1.5.4 2.5 1.8 2.5 3.4"/></svg><span>People</span></button>
-  <button data-view="study" title="Compare people and check the personality reads (⌘3 / Ctrl+3)" aria-label="Study"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5h12M3.5 11l3-3.5 2.5 2 4-5"/></svg><span>Study</span></button>
+  <button data-view="study" title="Patterns in what was said: words, timing and who talks to whom (⌘3 / Ctrl+3)" aria-label="Study"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13.5h12M3.5 11l3-3.5 2.5 2 4-5"/></svg><span>Study</span></button>
   <div class="rail-gap"></div>
   <button data-view="settings" title="Settings (⌘4 / Ctrl+4)" aria-label="Settings"><svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg><span>Settings</span></button>
 </nav>
@@ -1264,12 +1333,12 @@ function renderFeed(onlyAppend = false, around = null) {
   const start = onlyAppend ? lastRenderedCount : 0;
   if (!onlyAppend) feed.innerHTML = '';
   const html = [];
-  // keep the DOM light on long days: the last 1500 lines, or from a little before
+  // keep the DOM light on long days: the last 600 lines, or from a little before
   // an older line someone asked to see
   const ai = around ? vis.indexOf(around) : -1, ki = anchor ? vis.indexOf(anchor) : -1;
-  const from = ai >= 0 ? Math.max(0, Math.min(ai - 200, vis.length - 1500))
-    : ki >= 0 ? Math.max(0, Math.min(ki - 200, vis.length - 1500))
-    : Math.max(0, start, vis.length - 1500);
+  const from = ai >= 0 ? Math.max(0, Math.min(ai - 200, vis.length - FEED_MAX))
+    : ki >= 0 ? Math.max(0, Math.min(ki - 200, vis.length - FEED_MAX))
+    : Math.max(0, start, vis.length - FEED_MAX);
   const slice = vis.slice(from);
   lineIdx = new Map(lines.map((r, i) => [r, i])); shownLines = lines;
   let prev = from > 0 ? vis[from - 1] : null;
@@ -1499,21 +1568,25 @@ function renderKPIs(s) {
   $('#k-cross').textContent = s.n ? Math.round(100 * s.cross / s.n) + '%' : '–';
   $('#k-cross-s').textContent = s.n ? `${s.cross.toLocaleString()} ${s.cross === 1 ? 'line starts' : 'lines start'} over someone` : ' ';
 }
+const FEED_MAX = 600;
+// set innerHTML only when it changed: the same HTML again would rebuild every node for nothing
+const setHTML = (el, html) => { if (!el || el._html === html) return false; el.innerHTML = html; el._html = html; return true; };
 function renderBars(s) {
   const max = s.per[0]?.talk || 1, total = s.talk || 1;
   // everyone, however many: the list scrolls inside its panel when it's long
-  $('#bars').innerHTML = s.per.map((p) => `
+  const barsChanged = setHTML($('#bars'), s.per.map((p) => `
     <div class="bar-row${filter && filter !== p.k ? ' dim' : ''}${filter === p.k ? ' sel' : ''}" data-k="${esc(p.k)}" title="${esc(nameFor(p.k))}: ${p.words} words in ${p.lines} lines">
       <span class="name"><span class="swatch" style="background:${colorFor(p.k)}"></span><span class="nm">${esc(nameFor(p.k))}</span></span>
       <span class="track"><span class="fill" style="display:block;width:${(100 * p.talk / max).toFixed(1)}%;background:${colorFor(p.k)}"></span></span>
       <span class="num"><span class="dur">${fmtDur(p.talk)} · </span>${Math.round(100 * p.talk / total)}%</span>
       <button class="read" data-read="${esc(p.k)}" aria-label="Personality read of ${esc(nameFor(p.k))}" title="${isUid(p.k) ? 'Open their personality read (all their calls)' : 'Read them from this call, by the local model'}"><span class="rl-long">Personality read</span><span class="rl-short" aria-hidden="true">Read</span></button>
-    </div>`).join('') || '<div class="empty" style="padding:8px">No one has spoken yet</div>';
+    </div>`).join('') || '<div class="empty" style="padding:8px">No one has spoken yet</div>');
   const tm = $('#talkmeta'), tmText = filter ? `Showing ${nameFor(filter)} · Show everyone` : 'click a name to filter';
   if (tm.textContent !== tmText) {   // rewritten only when it changes, so a focused "Show everyone" keeps focus through live updates
     if (filter) { tm.innerHTML = `<button class="linkbtn" id="talk-clear" title="Show every speaker's lines again">${esc(tmText)}</button>`; $('#talk-clear').onclick = () => { const k = filter; if (!k) return; setFilter(k); $(`#bars .bar-row[data-k="${CSS.escape(k)}"] .read`)?.focus({ preventScroll: true }); }; }   // focus stays in Talk time, not lost to the page
     else tm.textContent = tmText;
   }
+  if (!barsChanged) return;
   document.querySelectorAll('.bar-row').forEach((el) => el.onclick = () => setFilter(el.dataset.k));
   document.querySelectorAll('.bar-row .read').forEach((b) => b.onclick = (e) => { e.stopPropagation(); personaRead(b.dataset.read); });
 }
@@ -1530,7 +1603,7 @@ function renderActivity(s) {
   if (grown && lg.style.display !== 'none' && svg.clientHeight && svg.clientHeight < 100) { lg.__h = lg.offsetHeight; lg.style.display = 'none'; }
   else if (lg.style.display === 'none' && (!grown || svg.clientHeight - (lg.__h || 0) >= 100)) lg.style.display = '';
   const W = svg.clientWidth || 400, H = grown && svg.clientHeight > 40 ? svg.clientHeight : 150, padL = 50, padB = 20, padT = 6;
-  if (!lines.length) { svg.innerHTML = ''; lg.innerHTML = ''; $('#act-meta').textContent = ''; return; }
+  if (!lines.length) { svg.innerHTML = ''; setHTML(lg, ''); $('#act-meta').textContent = ''; return; }
   const liveEnd = isToday() ? Math.max(Date.now(), lines[lines.length - 1].end) : lines[lines.length - 1].end;
   const v = chartView.act;          // set by dragging, scrolling or zooming the chart
   const endT = v ? v.b : liveEnd;
@@ -1582,8 +1655,8 @@ function renderActivity(s) {
       showTip(e, `<div class="t">${ft(b0 + i * bms)} to ${ft(b0 + (i + 1) * bms)}</div>${rows || '<div>Quiet</div>'}`); };
     el.onmouseleave = hideTip;
   });
-  $('#act-legend').innerHTML = keys
-    .map((k) => `<span data-k="${esc(k)}" class="${filter && filter !== k ? 'dim' : ''}"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`).join('');
+  if (setHTML($('#act-legend'), keys
+    .map((k) => `<span data-k="${esc(k)}" class="${filter && filter !== k ? 'dim' : ''}"><span class="swatch" style="background:${colorFor(k)}"></span>${esc(nameFor(k))}</span>`).join('')))
   document.querySelectorAll('#act-legend span[data-k]').forEach((el) => { el.onclick = () => setFilter(el.dataset.k); });
 }
 document.querySelectorAll('#act-range button').forEach((b) => b.onclick = () => { range = +b.dataset.r; chartView.act = null; document.querySelectorAll('#act-range button').forEach((x) => x.classList.toggle('on', x === b)); renderActivity(stats()); });
@@ -1801,7 +1874,7 @@ function renderWords() {
   const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, Math.max(16, Math.min(60, fit)));
   const max = top[0]?.[1] || 1;
   $('#wordmeta').textContent = filter ? `words ${nameFor(filter)} used most, minus filler` : 'words used most, minus filler';
-  $('#words').innerHTML = top.map(([w, c]) => `<div class="word"><span class="w"><i style="transform:scaleX(${(c / max).toFixed(3)})"></i><b>${esc(w)}</b></span><span class="c">${c}</span></div>`).join('') || '<div class="empty" style="padding:8px">—</div>';
+  if (setHTML($('#words'), top.map(([w, c]) => `<div class="word"><span class="w"><i style="transform:scaleX(${(c / max).toFixed(3)})"></i><b>${esc(w)}</b></span><span class="c">${c}</span></div>`).join('') || '<div class="empty" style="padding:8px">—</div>'))
   document.querySelectorAll('.word').forEach((el) => el.onclick = () => { $('#q').value = el.querySelector('b').textContent; query = $('#q').value; renderFeed(); });
 }
 
@@ -1885,7 +1958,7 @@ function renderState() {
   // rebuilt (and re-folded) only when something changed, and never mid-click
   const nowBox = $('#now');
   if (nowHtml !== nowBox.dataset.html && !pressing(nowBox)) { nowBox.innerHTML = nowHtml; nowBox.dataset.html = nowHtml; fitChips(); }
-  if (st.res?.cpu != null) { resHist.push({ t: st.now, ...st.res }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); }
+  sampleRes(st);
   renderResources(); refreshPop();
 }
 
@@ -1963,14 +2036,14 @@ try { resChoice = JSON.parse(localStorage.getItem('ct-res-metrics') || 'null'); 
 const resShown = (m) => (resChoice ? resChoice.includes(m.id) : m.on);
 function renderResources() {
   const r = liveState?.res;
-  if (!r) { $('#res').innerHTML = '<div class="empty" style="grid-column:1/-1;padding:8px">Server not running</div>'; return; }
-  if (r.cpu == null) { $('#res').innerHTML = '<div class="empty" style="grid-column:1/-1;padding:8px">Measuring…</div>'; return; }
+  if (!r) { setHTML($('#res'), '<div class="empty" style="grid-column:1/-1;padding:8px">Server not running</div>'); return; }
+  if (r.cpu == null) { setHTML($('#res'), '<div class="empty" style="grid-column:1/-1;padding:8px">Measuring…</div>'); return; }
   const tiles = METRICS.filter((m) => resShown(m) && m.has(r));
-  $('#res').innerHTML = tiles.map((m) => {
+  setHTML($('#res'), tiles.map((m) => {
     const hist = m.h ? resHist.map((x) => x[m.h] || 0) : null;
     const sp = hist && hist.length > 1 ? spark(hist, Math.max(m.max || 0, ...hist) * 1.15 || 1) : '';
     return `<div class="m"><div class="l">${m.name}</div><div class="v">${m.v(r)}</div><div class="s">${m.s(r)}</div>${sp}</div>`;
-  }).join('') || '<div class="empty" style="grid-column:1/-1;padding:8px">No metrics chosen</div>';
+  }).join('') || '<div class="empty" style="grid-column:1/-1;padding:8px">No metrics chosen</div>');
 }
 document.addEventListener('click', (e) => {
   const b = e.target.closest?.('#res-pick'); if (!b) return;
@@ -3246,7 +3319,7 @@ let serverSettings = null;
 const loadServerSettings = () => fetch('/api/settings').then((r) => r.json()).then((s) => { serverSettings = s; applySettings(); return s; }).catch(() => null);
 function applySettings() {
   document.documentElement.classList.toggle('no-persona', serverSettings && serverSettings.personality === false);
-  if (serverSettings?.personality === false && curView === 'study') showView('calls');
+  if (curView === 'study') renderStudyPage();   // the read tabs come and go with the setting
   if (serverSettings?.personality === false) document.querySelectorAll('#view-people .pd-read').forEach((x) => x.remove());   // People drawn before the settings came in
 }
 loadServerSettings().then(() => loadPeople());
@@ -3420,61 +3493,252 @@ function accountLine(a) {
     : a.proxy ? `<div class="ap">Proxy ${esc(a.proxy)}</div>` : '';
   return `<div class="acct${a.deafened ? ' bad' : ''}"><div class="an">${esc(a.label)}<span class="ar">${a.role === 'main' ? 'main' : 'listener'}</span></div>
     <div class="as">${st}</div>${px}
-    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Make this your main account. No account ever sends your microphone">Make main</button>` : ''}<button data-acct-proxy="${esc(a.id)}" title="Give this account its own proxy for Discord">Proxy…</button>${a.role === 'listener' ? `<button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
+    <div class="ab"><button data-acct-show="${esc(a.id)}">Show</button>${a.role === 'listener' ? `<button data-acct-mute="${esc(a.id)}" data-on="${a.muted ? 0 : 1}">${a.muted ? 'Sound on' : 'Sound off'}</button><button data-acct-main="${esc(a.id)}" title="Make this your main account. No account ever sends your microphone">Make main</button>` : ''}<button data-acct-details="${esc(a.id)}" title="Its email, username, display name and password, saved on this computer">Details…</button><button data-acct-proxy="${esc(a.id)}" title="Choose this account's proxy: one of your Webshare proxies or any other">Proxy…</button>${a.role === 'listener' ? `<button data-acct-rm="${esc(a.id)}" class="danger">Remove</button>` : ''}</div></div>`;
 }
 function accountsHtml(inline) {
   const list = appState.accounts || [];
   return `${inline ? '' : '<h3 style="margin-top:14px">Accounts</h3>'}<div class="accts">${list.map(accountLine).join('')}</div>
-    <div class="btns"><button data-desk="transcribe">Channels…</button><button data-desk="add">Add account</button></div>
-    <div class="hint">Listener accounts have no microphone and start with sound off. Each account signs in once in its own window.</div>`;
+    <div class="btns"><button data-desk="transcribe">Channels…</button><button data-desk="add" title="Sign in to a Discord account you already have, in its own window">Add account</button><button data-desk="create" title="Open Discord's sign-up page in a new window; the new account stays signed in there">Create account</button></div>
+    <div class="hint">Listener accounts have no microphone and start with sound off. Each account signs in once in its own window. Both first ask how the account connects (your network, a Webshare proxy or another proxy). Create account then opens Discord's sign-up page: fill it in, confirm the email Discord sends, then join the servers you want transcribed.</div>`;
 }
 document.addEventListener('click', async (e) => {
   const t = e.target.closest?.('button'); if (!t || !desk?.accounts) return;
-  if (t.dataset.desk === 'add') { closePop?.(); await desk.addAccount(); }
+  if (t.dataset.desk === 'add') { closePop?.(); openNewAccount('signin'); }
+  if (t.dataset.desk === 'create') { closePop?.(); openNewAccount('create'); }
   if (t.dataset.desk === 'transcribe') { closePop?.(); openTranscribe(); }
   if (t.dataset.acctShow) desk.openDiscord(t.dataset.acctShow);
   if (t.dataset.acctMute) desk.setMuted(t.dataset.on === '0' ? false : true, t.dataset.acctMute);
   if (t.dataset.acctMain) await desk.setRole(t.dataset.acctMain, 'main');
   if (t.dataset.acctProxy) openProxy(t.dataset.acctProxy);
+  if (t.dataset.acctDetails) openDetails(t.dataset.acctDetails);
   if (t.dataset.acctRm) await desk.removeAccount(t.dataset.acctRm);
 });
-// Per-account proxy: one account's Discord window can use its own proxy, so
-// several accounts can look like separate networks at once.
+// How an account connects: your own network, one of your Webshare proxies, or a proxy you type.
+// Used by an account's Proxy dialog and by Add account / Create account (set before its window opens).
+// The Webshare key and the proxies' passwords never reach this page: the app keeps them.
+function proxyChooser(root, { mode = 'network', value = '', forId = null, onChange = () => {} } = {}) {
+  let ws = null, wsSel = null, wsErr = '', wsBusy = false, keyEdit = false, cc = '', q = '', hideUsed = false;
+  const ccName = (c) => { try { return new Intl.DisplayNames([], { type: 'region' }).of(c) || c; } catch { return c; } };
+  const usedByOther = (p) => (p.usedBy || []).filter((u) => u.id !== forId);
+  async function loadWs(fresh = false) {
+    wsBusy = true; wsErr = ''; draw();
+    const info = await desk.webshare?.();
+    if (!info?.hasKey) { ws = { needKey: true }; wsBusy = false; draw(); return; }
+    const r = await desk.webshareList(fresh);
+    wsBusy = false;
+    if (r?.error) wsErr = r.error; else ws = r || { proxies: [] };
+    draw();
+  }
+  function keyForm(again) {
+    return `<div class="wskey"><div class="pnote">${again ? 'Paste a new Webshare API key, or remove the saved one.' : 'Pick from your Webshare proxies: paste your Webshare API key once (Webshare dashboard, API keys page). It\'s saved on this computer, encrypted, and used only to list your proxies.'}</div>
+      <div class="wskrow"><input class="pxin" id="wskey" type="password" autocomplete="off" spellcheck="false" placeholder="Webshare API key"><button data-ws="savekey" class="primary">Save key</button></div>
+      ${again ? '<div class="wskrow"><button data-ws="cancelkey">Keep the saved key</button><button data-ws="rmkey" class="danger">Remove key</button></div>' : ''}</div>`;
+  }
+  function wsHtml() {
+    if (wsBusy) return '<div class="pwait"><span class="s"></span>Getting your Webshare proxies…</div>';
+    if (!ws || ws.needKey || keyEdit) return keyForm(keyEdit) + (wsErr ? `<div class="pnote bad">${esc(wsErr)}</div>` : '');
+    if (wsErr) return `<div class="pnote bad">${esc(wsErr)}</div><div class="wskrow"><button data-ws="retry">Try again</button><button data-ws="changekey">Change API key</button></div>`;
+    const all = ws.proxies || [];
+    if (!all.length) return '<div class="pnote">Your Webshare account has no proxies to pick from.</div><div class="wskrow"><button data-ws="retry">Refresh list</button><button data-ws="changekey">Change API key</button></div>';
+    const countries = [...all.reduce((m, p) => m.set(p.country, (m.get(p.country) || 0) + 1), new Map())].sort((a, b) => ccName(a[0]).localeCompare(ccName(b[0])));
+    const ql = q.toLowerCase();
+    const list = all.filter((p) => (!cc || p.country === cc) && (!hideUsed || !usedByOther(p).length)
+        && (!ql || `${p.host}:${p.port} ${p.city} ${ccName(p.country)}`.toLowerCase().includes(ql)))
+      .sort((a, b) => (b.valid - a.valid) || (usedByOther(a).length - usedByOther(b).length) || ccName(a.country).localeCompare(ccName(b.country)) || a.city.localeCompare(b.city));
+    const free = all.filter((p) => p.valid && !usedByOther(p).length).length;
+    return `<div class="wsfilter">
+        <select id="wscc" aria-label="Country"><option value="">All countries (${all.length})</option>${countries.map(([c, n]) => `<option value="${esc(c)}" ${c === cc ? 'selected' : ''}>${esc(c ? ccName(c) : 'Unknown')} (${n})</option>`).join('')}</select>
+        <input id="wsq" type="search" placeholder="Search address or city…" value="${esc(q)}">
+        <label class="wsck"><input type="checkbox" id="wshide" ${hideUsed ? 'checked' : ''}> Hide ones in use</label></div>
+      <div class="wslist" role="listbox" aria-label="Your Webshare proxies">${list.slice(0, 300).map((p) => {
+        const u = usedByOther(p), mine = (p.usedBy || []).some((x) => x.id === forId);
+        return `<button class="wsrow${p.id === wsSel ? ' on' : ''}" role="option" aria-selected="${p.id === wsSel}" data-wsid="${esc(p.id)}" title="${esc(`${p.host}:${p.port}`)}">
+          <span class="wscc">${esc(p.country || '?')}</span><span class="wsplace">${esc(p.city || ccName(p.country) || 'Unknown place')}</span>
+          <span class="wsaddr">${esc(p.backbone ? 'rotating via ' + p.host : `${p.host}:${p.port}`)}</span>
+          <span class="wstags">${!p.valid ? '<em class="bad">not working</em>' : ''}${mine ? '<em>this account</em>' : ''}${u.length ? `<em>used by ${esc(u.map((x) => x.label).join(', '))}</em>` : ''}</span></button>`;
+      }).join('') || '<div class="pnote">No proxies match.</div>'}</div>
+      ${list.length > 300 ? `<div class="pnote">Showing 300 of ${list.length}: narrow it down with the country or search.</div>` : ''}
+      <div class="wskrow"><button data-ws="random" ${free ? '' : 'disabled'} title="Pick a working proxy no other account uses">Pick a free one for me</button><button data-ws="retry" title="Get the list from Webshare again">Refresh list</button><button data-ws="changekey">Change API key</button></div>`;
+  }
+  function draw() {
+    const focusId = document.activeElement?.id, caret = document.activeElement?.selectionStart;
+    root.innerHTML = `<div class="seg pxmode" role="tablist" aria-label="How this account connects">
+        ${[['network', 'Your network'], ['webshare', 'Webshare proxy'], ['other', 'Other proxy']].map(([k, l]) => `<button role="tab" data-mode="${k}" class="${mode === k ? 'on' : ''}" aria-selected="${mode === k}">${l}</button>`).join('')}</div>
+      <div class="pxbody">${mode === 'network' ? '<div class="pnote">No proxy of its own: the account uses this computer\'s network, like the rest of the app.</div>'
+        : mode === 'other' ? `<input class="pxin" id="pxy" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://user:password@host:port" value="${esc(value)}">
+          <div class="pnote">host:port, host:port:user:password, socks5://… and Webshare's list lines all work. Kept on this computer only.</div>`
+        : wsHtml()}</div>`;
+    root.querySelectorAll('[data-mode]').forEach((b) => b.onclick = () => { mode = b.dataset.mode; if (mode === 'webshare' && !ws && !wsBusy) loadWs(); draw(); onChange(); });
+    const inp = root.querySelector('#pxy'); if (inp) inp.oninput = () => { value = inp.value; onChange(); };
+    root.querySelectorAll('[data-wsid]').forEach((b) => b.onclick = () => { wsSel = b.dataset.wsid; draw(); onChange(); });
+    const sel = root.querySelector('#wscc'); if (sel) sel.onchange = () => { cc = sel.value; draw(); };
+    const qi = root.querySelector('#wsq'); if (qi) qi.oninput = () => { q = qi.value; draw(); };
+    const hi = root.querySelector('#wshide'); if (hi) hi.onchange = () => { hideUsed = hi.checked; draw(); };
+    root.querySelectorAll('[data-ws]').forEach((b) => b.onclick = async () => {
+      const a = b.dataset.ws;
+      if (a === 'retry') loadWs(true);
+      if (a === 'changekey') { keyEdit = true; draw(); }
+      if (a === 'cancelkey') { keyEdit = false; draw(); }
+      if (a === 'rmkey') { await desk.setWebshareKey(''); keyEdit = false; ws = { needKey: true }; wsSel = null; draw(); onChange(); }
+      if (a === 'savekey') {
+        const k = root.querySelector('#wskey').value.trim();
+        if (!k) { wsErr = 'Paste your API key first.'; draw(); return; }
+        b.disabled = true; b.textContent = 'Checking…';
+        const r = await desk.setWebshareKey(k);
+        if (r?.error) { wsErr = r.error; draw(); return; }
+        keyEdit = false; loadWs(false);
+      }
+      if (a === 'random') {
+        const pool = (ws.proxies || []).filter((p) => p.valid && !usedByOther(p).length && (!cc || p.country === cc));
+        const p = pool[Math.floor(Math.random() * pool.length)] || (ws.proxies || []).find((x) => x.valid && !usedByOther(x).length);
+        if (p) { wsSel = p.id; cc = cc && p.country !== cc ? '' : cc; draw(); root.querySelector('.wsrow.on')?.scrollIntoView({ block: 'nearest' }); onChange(); }
+      }
+    });
+    if (focusId) { const f = root.querySelector('#' + focusId); if (f) { f.focus(); try { if (caret != null) f.setSelectionRange(caret, caret); } catch {} } }
+  }
+  if (mode === 'webshare') loadWs(); else draw();
+  return {
+    // { mode: 'network' } | { mode: 'webshare', webshare: id } | { mode: 'other', value }; null when not ready
+    get() {
+      if (mode === 'network') return { mode };
+      if (mode === 'webshare') return wsSel ? { mode, webshare: wsSel } : null;
+      return value.trim() ? { mode, value: value.trim() } : null;
+    },
+    why() { return mode === 'webshare' ? (ws?.needKey || !ws ? 'Save your Webshare API key, then pick a proxy.' : 'Pick a proxy from the list.') : 'Type a proxy, or choose Your network.'; },
+  };
+}
+
+// An account's Proxy dialog
 async function openProxy(id) {
   if (!desk?.accounts) return;
   const info = await desk.accounts();
   const a = (info.accounts || []).find((x) => x.id === id);
   if (!a) return;
+  const hasKey = !!(await desk.webshare?.())?.hasKey;
   const bg = $('#modal'), box = bg.firstElementChild;
-  box.classList.add('persona');
+  box.classList.add('persona', 'pxmodal');
   let release = () => {};
-  const close = () => { if (release() !== false) box.classList.remove('persona'); };
+  const close = () => { if (release() !== false) box.classList.remove('persona', 'pxmodal'); };
   bg.onclick = (e) => { if (e.target === bg) close(); };
-  const saved = a.proxyMode === 'invalid' ? 'The saved proxy could not be read. Enter a new one, or choose Remove.'
-    : !a.proxy ? 'No proxy of its own: this account follows your system network settings.'
-    : a.proxyMode === 'direct' ? 'No proxy: this account connects directly.' : `Saved: ${esc(a.proxy)}`;
+  const saved = a.proxyMode === 'invalid' ? 'The saved proxy could not be read. Pick a new one, or choose Your network.'
+    : !a.proxy ? 'Now: this computer\'s network.' : a.proxyMode === 'direct' ? 'Now: no proxy, connects directly.' : `Now: ${esc(a.proxy)}`;
   box.innerHTML = `<h3 id="modal-h">Proxy for ${esc(a.label)}</h3>
-    <div class="psub">Only this account's Discord window uses it: sign-in, pages and the gateway. Other accounts keep their own.</div>
-    <input class="pxin" id="pxy" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="http://user:password@host:port">
-    <div class="pnote" id="pxymsg">${saved}</div>
-    <div class="pnote">host:port, host:port:user:password, socks5://… and Webshare's list lines all work. The value is kept on this computer only.</div>
-    <div class="btns">${a.proxy || a.proxyMode === 'direct' || a.proxyMode === 'invalid' ? '<button data-a="clear" class="danger">Remove</button>' : ''}<button data-a="close">Cancel</button><button data-a="save" class="primary">Save</button></div>`;
-  const input = box.querySelector('#pxy'), msg = box.querySelector('#pxymsg');
-  const save = async (value) => {
-    msg.classList.remove('bad');
-    const r = await desk.setProxy(a.id, value);
+    <div class="psub">Only this account's Discord window uses it: sign-in, pages and the voice gateway. ${saved}</div>
+    <div id="pxch"></div>
+    <div class="pnote" id="pxymsg"></div>
+    <div class="btns"><button data-a="close">Cancel</button><button data-a="save" class="primary">Save and reload its window</button></div>`;
+  const msg = box.querySelector('#pxymsg');
+  const ch = proxyChooser(box.querySelector('#pxch'), { mode: a.proxy && a.proxyMode !== 'direct' ? 'other' : hasKey ? 'webshare' : a.proxy ? 'other' : 'network', forId: a.id, onChange: () => { msg.textContent = ''; msg.classList.remove('bad'); } });
+  box.querySelector('[data-a="close"]').onclick = close;
+  box.querySelector('[data-a="save"]').onclick = async (ev) => {
+    const v = ch.get();
+    if (!v) { msg.textContent = ch.why(); msg.classList.add('bad'); return; }
+    ev.target.disabled = true;
+    const r = v.mode === 'webshare' ? await desk.webshareUse(a.id, v.webshare) : await desk.setProxy(a.id, v.mode === 'other' ? v.value : '');
+    ev.target.disabled = false;
     if (r?.error) { msg.textContent = r.error; msg.classList.add('bad'); return; }
     close();
   };
-  box.querySelector('[data-a="close"]').onclick = close;
-  box.querySelector('[data-a="save"]').onclick = () => {
-    if (!input.value.trim()) { msg.textContent = 'Type a proxy, or choose Remove to go back to your system network.'; msg.classList.add('bad'); return; }
-    save(input.value);
-  };
-  box.querySelector('[data-a="clear"]')?.addEventListener('click', () => save(''));
-  release = openModal(close, { focus: input });
+  release = openModal(close, { focus: '[data-a="close"]' });
 }
 window.openProxy = openProxy;
+
+// A strong random password: 20 characters, upper and lower case, digits and symbols, no look-alikes (0/O, 1/l/I).
+function securePassword(len = 20) {
+  const sets = ['ABCDEFGHJKLMNPQRSTUVWXYZ', 'abcdefghijkmnopqrstuvwxyz', '23456789', '!@#$%^&*-_=+?'];
+  const all = sets.join('');
+  const pick = (chars) => { const lim = 256 - (256 % chars.length), b = new Uint8Array(1); do crypto.getRandomValues(b); while (b[0] >= lim); return chars[b[0] % chars.length]; };
+  const out = sets.map(pick);                                   // at least one of each kind
+  while (out.length < len) out.push(pick(all));
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor((crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32) * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out.join('');
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok; }
+}
+// Email, username, display name and password for an account, with a password suggestion and a copy button on each,
+// so you can paste them into Discord's form. Kept on this computer, encrypted, never shown in the account list.
+function detailsForm(root, init = {}, { suggest = false } = {}) {
+  const v = { email: '', username: '', displayName: '', password: '', ...init };
+  if (suggest && !v.password) v.password = securePassword();
+  const F = [['email', 'Email', 'email', 'you@example.com'], ['username', 'Username', 'text', 'lowercase, numbers, _ and .'], ['displayName', 'Display name', 'text', 'what people see'], ['password', 'Password', 'password', '']];
+  root.innerHTML = `<div class="dform">${F.map(([k, l, t, ph]) => `<label class="drow"><span>${l}</span>
+      <span class="dfield"><input class="pxin" data-k="${k}" type="${t}" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="${esc(ph)}" value="${esc(v[k])}">
+      ${k === 'password' ? `<button type="button" data-d="show" title="Show or hide the password">Show</button><button type="button" data-d="gen" title="Suggest a new random 20-character password">New password</button>` : ''}
+      <button type="button" data-d="copy" data-k="${k}" title="Copy the ${l.toLowerCase()}, to paste into Discord">Copy</button></span></label>`).join('')}
+    <div class="pnote" id="dmsg">${suggest ? 'A strong password is filled in: choose New password for another. ' : ''}Saved on this computer, encrypted. Discord never gets these from Earshot: copy each one into its form.</div></div>`;
+  const inp = (k) => root.querySelector(`input[data-k="${k}"]`), msg = root.querySelector('#dmsg');
+  root.querySelectorAll('input[data-k]').forEach((i) => i.oninput = () => { v[i.dataset.k] = i.value; });
+  root.querySelector('[data-d="show"]').onclick = (e) => { const p = inp('password'); p.type = p.type === 'password' ? 'text' : 'password'; e.target.textContent = p.type === 'password' ? 'Show' : 'Hide'; };
+  root.querySelector('[data-d="gen"]').onclick = () => { v.password = securePassword(); inp('password').value = v.password; inp('password').type = 'text'; root.querySelector('[data-d="show"]').textContent = 'Hide'; msg.textContent = 'New password suggested. It\'s saved when you continue.'; };
+  root.querySelectorAll('[data-d="copy"]').forEach((b) => b.onclick = async () => {
+    const k = b.dataset.k; if (!v[k]) { msg.textContent = 'Nothing to copy yet.'; return; }
+    msg.textContent = (await copyText(v[k])) ? `${F.find((f) => f[0] === k)[1]} copied.` : 'Couldn\'t copy: select it and copy by hand.';
+  });
+  return { get: () => ({ ...v }), check: () => (v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim()) ? 'That email doesn\'t look right.' : v.password && v.password.length < 8 ? 'Discord needs a password of at least 8 characters.' : '') };
+}
+// An account's saved details, from its row in Accounts
+async function openDetails(id) {
+  if (!desk?.accountDetails) return;
+  const d = await desk.accountDetails(id);
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona', 'pxmodal');
+  let release = () => {};
+  const close = () => { if (release() !== false) box.classList.remove('persona', 'pxmodal'); };
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  box.innerHTML = `<h3 id="modal-h">Sign-in details${d?.label ? ' for ' + esc(d.label) : ''}</h3>
+    <div class="psub">What you used for this Discord account, kept here so you don't lose it.</div><div id="dch"></div><div class="pnote" id="derr"></div>
+    <div class="btns"><button data-a="close">Cancel</button><button data-a="save" class="primary">Save details</button></div>`;
+  if (d?.error) { box.querySelector('#derr').textContent = d.error; box.querySelector('#derr').classList.add('bad'); }
+  const f = detailsForm(box.querySelector('#dch'), d?.creds || {});
+  box.querySelector('[data-a="close"]').onclick = close;
+  box.querySelector('[data-a="save"]').onclick = async () => {
+    const bad = f.check(), err = box.querySelector('#derr');
+    if (bad) { err.textContent = bad; err.classList.add('bad'); return; }
+    const r = await desk.setAccountDetails(id, f.get());
+    if (r?.error) { err.textContent = r.error; err.classList.add('bad'); return; }
+    close();
+  };
+  release = openModal(close, { focus: '[data-a="close"]' });
+}
+window.openDetails = openDetails;
+// Add account / Create account: choose its proxy first, then its window opens on Discord's sign-in or sign-up page.
+async function openNewAccount(kind = 'signin') {
+  if (!desk?.addAccount) return;
+  const hasKey = !!(await desk.webshare?.())?.hasKey;
+  const bg = $('#modal'), box = bg.firstElementChild;
+  box.classList.add('persona', 'pxmodal');
+  let release = () => {};
+  const close = () => { if (release() !== false) box.classList.remove('persona', 'pxmodal'); };
+  bg.onclick = (e) => { if (e.target === bg) close(); };
+  const create = kind === 'create';
+  box.innerHTML = `<h3 id="modal-h">${create ? 'Create a Discord account' : 'Add a Discord account'}</h3>
+    <h4 class="sh2">${create ? 'Account details' : 'Sign-in details'} <small>${create ? 'to copy into Discord\'s sign-up form' : 'optional: kept so you don\'t lose them'}</small></h4>
+    <div id="dch"></div>
+    <h4 class="sh2">Connection <small>its window uses this from the very first page</small></h4>
+    <div id="pxch"></div>
+    <div class="pnote" id="pxymsg"></div>
+    ${create ? '<div class="pnote">Then fill in Discord\'s sign-up form in the window that opens, and confirm the email Discord sends.</div>' : ''}
+    <div class="btns"><button data-a="close">Cancel</button><button data-a="go" class="primary">${create ? 'Open the sign-up page' : 'Open the sign-in page'}</button></div>`;
+  const msg = box.querySelector('#pxymsg');
+  const df = detailsForm(box.querySelector('#dch'), {}, { suggest: create });
+  const ch = proxyChooser(box.querySelector('#pxch'), { mode: hasKey ? 'webshare' : 'network', onChange: () => { msg.textContent = ''; msg.classList.remove('bad'); } });
+  box.querySelector('[data-a="close"]').onclick = close;
+  box.querySelector('[data-a="go"]').onclick = async (ev) => {
+    const bad = df.check();
+    if (bad) { msg.textContent = bad; msg.classList.add('bad'); return; }
+    const v = ch.get();
+    if (!v) { msg.textContent = ch.why(); msg.classList.add('bad'); return; }
+    ev.target.disabled = true; ev.target.textContent = 'Opening…';
+    const r = await desk.addAccount(kind, v.mode === 'webshare' ? { webshare: v.webshare } : v.mode === 'other' ? { value: v.value } : null, df.get());
+    if (r?.error) { ev.target.disabled = false; ev.target.textContent = create ? 'Open the sign-up page' : 'Open the sign-in page'; msg.textContent = r.error; msg.classList.add('bad'); return; }
+    close();
+  };
+  release = openModal(close, { focus: '[data-a="close"]' });
+}
+window.openNewAccount = openNewAccount;
+desk?.onCommand?.((c) => { if (c === 'new-account:create') openNewAccount('create'); else if (c === 'new-account:signin') openNewAccount('signin'); });
 // "Transcribe a channel" / auto-join: pick a voice channel for a free account to
 // open (you click Join Voice), and set its two flags — blue to let free accounts
 // join it automatically while it is open and not full, yellow to favourite it so
@@ -3512,7 +3776,7 @@ async function openTranscribe() {
       <div class="btns"><button data-a="add">Add account</button><button data-a="close">Close</button></div>`;
     const inp = box.querySelector('#tq'); inp.oninput = () => { const v = inp.value; render(v); const i2 = box.querySelector('#tq'); i2.focus(); i2.setSelectionRange(v.length, v.length); };
     box.querySelector('[data-a="close"]').onclick = close;
-    box.querySelector('[data-a="add"]').onclick = async () => { close(); await desk.addAccount(); };
+    box.querySelector('[data-a="add"]').onclick = () => { close(); openNewAccount('signin'); };
     box.querySelectorAll('.tc').forEach((b) => b.onclick = async () => {
       const r = await desk.transcribe(b.dataset.g, b.dataset.c);
       if (r?.error) { box.querySelector('#tmsg').textContent = r.error; return; }
@@ -3545,7 +3809,7 @@ function pearson(xs, ys) {
   for (let i = 0; i < n; i++) { const dx = xs[i] - mx, dy = ys[i] - my; sxy += dx * dy; sxx += dx * dx; syy += dy * dy; }
   return sxx && syy ? sxy / Math.sqrt(sxx * syy) : null;
 }
-let studyTab = 'group', studyGroupTrait = 'warmth';
+let studyTab = 'overview', studyGroupTrait = 'warmth';
 const studyName = (p) => { const n = nameFor(p.id); return n && n !== p.id && !/^\d{15,22}$/.test(n) ? n : (peopleById.get(p.id)?.name || p.name); };
 // /api/study (everyone's scores per read, test scores, the codebook): shared by Study, People and How reads work
 let studyCache = null;
@@ -3644,14 +3908,174 @@ async function openHowReads(back) {
   fadeScroll(box.querySelector('.pbody'));
 }
 window.openHowReads = openHowReads;
+// ------------------------------------------------------------ study: patterns in what was said (/api/insights; no model involved)
+let insOpts = { srv: '', period: 'all' }, insCache = null, insSort = { k: 'share', dir: -1 };
+async function getInsights() {
+  const key = insOpts.srv + '|' + insOpts.period;
+  if (insCache && insCache.key === key && Date.now() - insCache.at < 60000) return insCache.I;
+  const I = await fetch(`/api/insights?srv=${encodeURIComponent(insOpts.srv)}&period=${insOpts.period}`).then((r) => r.json()).catch(() => null);
+  if (I && I.totals) insCache = { key, at: Date.now(), I };
+  return I && I.totals ? I : null;
+}
+const insName = (id, fb) => { if (/^\d{15,22}$/.test(id)) { const n = nameFor(id); if (n && n !== id && !/^\d{15,22}$/.test(n)) return n; } return fb || id; };
+const insWho = (id, fb) => /^\d{15,22}$/.test(id) ? `<button class="linkbtn" data-person="${esc(id)}" title="Open ${esc(insName(id, fb))} in People">${esc(insName(id, fb))}</button>` : `<b>${esc(insName(id, fb))}</b>`;
+const hourName = (h) => new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: 'numeric' });
+const nf = (n) => Number(n).toLocaleString();
+const iPct = (a, b) => b ? Math.round(100 * a / b) : 0;
+const iPlural = (n, w, ws) => `${nf(n)} ${n === 1 ? w : (ws || w + 's')}`;
+
+function insControls(I) {
+  const per = [['all', 'All time'], ['7d', 'Last 7 days'], ['24h', 'Last 24 hours']];
+  const span = I.from ? `${fmtDay(I.from)} to ${fmtDay(I.to)}` : '';
+  return `<div class="srowc ins-ctl">
+    <select data-i="srv" aria-label="Server"><option value="">Every server</option>${insOpts.srv && !I.servers.some((s) => s.key === insOpts.srv) ? `<option value="${esc(insOpts.srv)}" selected>The server you picked (quiet in this span)</option>` : ''}${I.servers.map((s) => `<option value="${esc(s.key)}" ${s.key === insOpts.srv ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+    <select data-i="period" aria-label="Time span">${per.map(([k, l]) => `<option value="${k}" ${k === insOpts.period ? 'selected' : ''}>${l}</option>`).join('')}</select>
+    <span class="hint">${span ? `${esc(span)} · ` : ''}${iPlural(I.totals.lines, 'line')} from ${iPlural(I.totals.people, 'person', 'people')}. Worked out from the transcripts alone.</span></div>`;
+}
+
+// plain sentences about what stands out; each one names who and how much
+function insFindings(I) {
+  const ps = I.people, T = I.totals, out = [];
+  if (!ps.length) return out;
+  const top = (k, f = (p) => p[k] != null) => ps.filter(f).slice().sort((a, b) => b[k] - a[k]);
+  const enough = (p) => p.lines >= 200;
+  const s = top('share');
+  if (s[0]) out.push(`${insWho(s[0].id, s[0].name)} does the most talking: ${s[0].share}% of all talking time${s[1] ? `, then ${insWho(s[1].id, s[1].name)} with ${s[1].share}%` : ''}.`);
+  if (T.questions) out.push(`${iPct(T.answered, T.questions)}% of the ${nf(T.questions)} real questions got an answer${T.waitMedian != null ? `, usually within ${Math.max(1, Math.round(T.waitMedian))} seconds` : ''}.`);
+  const ask = top('asked'), ans = top('answered');
+  if (ask[0] && ask[0].asked) out.push(`${insWho(ask[0].id, ask[0].name)} asks the most questions (${nf(ask[0].asked)}), and ${ans[0] && ans[0].answered ? `${insWho(ans[0].id, ans[0].name)} answers the most (${nf(ans[0].answered)})` : 'nobody stands out for answering'}.`);
+  const ign = ps.filter((p) => p.asked >= 30).sort((a, b) => a.askedAnswered / a.asked - b.askedAnswered / b.asked);
+  if (ign.length >= 3) { const lo = ign[0], hi = ign[ign.length - 1]; out.push(`Questions from ${insWho(hi.id, hi.name)} get answered most often (${iPct(hi.askedAnswered, hi.asked)}%); questions from ${insWho(lo.id, lo.name)} least often (${iPct(lo.askedAnswered, lo.asked)}%).`); }
+  const pr = I.pairs[0];
+  if (pr) out.push(`${insWho(pr.a, pr.aName)} and ${insWho(pr.b, pr.bName)} go back and forth the most: ${nf(pr.ab + pr.ba)} replies between them.`);
+  const ov = top('overRate', enough);
+  if (ov.length >= 3) out.push(`${insWho(ov[0].id, ov[0].name)} cuts in most: ${ov[0].overRate}% of their lines start while someone else is still talking. ${insWho(ov[ov.length - 1].id, ov[ov.length - 1].name)} waits their turn most (${ov[ov.length - 1].overRate}%).`);
+  const sw = top('swearRate', enough);
+  if (sw[0] && T.swears) out.push(`${iPct(T.swears, T.words) >= 1 ? `${(100 * T.swears / T.words).toFixed(1)}% of all words are swears` : `${nf(T.swears)} swears in all`}. ${insWho(sw[0].id, sw[0].name)} swears most: ${sw[0].swearRate} per 100 lines.`);
+  const we = ps.filter((p) => p.selfShare != null && enough(p)).sort((a, b) => a.selfShare - b.selfShare);
+  if (we.length >= 3) out.push(`${insWho(we[0].id, we[0].name)} talks most in terms of the group: ${100 - we[0].selfShare}% of their "I" and "we" words are "we". For ${insWho(we[we.length - 1].id, we[we.length - 1].name)} it's ${100 - we[we.length - 1].selfShare}%.`);
+  const va = top('variety', (p) => p.variety != null && enough(p));
+  if (va.length >= 3) out.push(`${insWho(va[0].id, va[0].name)} uses the widest range of words (${va[0].variety} different words in every 100).`);
+  const lt = top('wordsPerTurn', enough);
+  if (lt[0]) out.push(`${insWho(lt[0].id, lt[0].name)} talks longest before letting someone else in: ${lt[0].wordsPerTurn} words a turn on average${lt.length > 2 ? `, against ${lt[lt.length - 1].wordsPerTurn} for ${insWho(lt[lt.length - 1].id, lt[lt.length - 1].name)}` : ''}.`);
+  const pk = I.hours.indexOf(Math.max(...I.hours));
+  if (T.lines) out.push(`The busiest hour is ${hourName(pk)}${I.busiest ? `; the busiest minute was ${fmtDay(I.busiest.t)} at ${fmtHM(I.busiest.t)}, with ${I.busiest.lines} lines` : ''}.`);
+  const ri = I.rising[0];
+  if (ri) out.push(`New in the last 24 hours: "${esc(ri.w)}" came up ${iPlural(ri.now, 'time')}, against ${ri.before} before.`);
+  if (I.longest && I.longest.words >= 40) out.push(`The longest stretch without a break: ${insWho(I.longest.who, I.longest.name)}, ${nf(I.longest.words)} words${I.longest.call ? ` · <button class="linkbtn" data-open="${esc(I.longest.call)}" data-t="${I.longest.t}" title="Open the transcript at this line">Read it</button>` : ''}.`);
+  return out;
+}
+
+function insBars(vals, labels, tips, H = 150) {
+  const W = 640, L = 36, R = 6, T = 8, B = 22, n = vals.length, max = Math.max(1, ...vals);
+  const step = (W - L - R) / n, bw = Math.max(2, Math.min(28, step - 2));
+  const nice = (m) => { const p = 10 ** Math.floor(Math.log10(m)); return [1, 2, 5, 10].map((k) => k * p).find((k) => k >= m / 4) || p; };
+  const tick = nice(max), top = Math.ceil(max / tick) * tick, y = (v) => T + (H - T - B) * (1 - v / top);
+  let g = '';
+  for (let v = 0; v <= top; v += tick) g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="sg"/><text x="${L - 6}" y="${y(v) + 3}" class="sy">${v >= 1000 ? (v / 1000) + 'k' : v}</text>`;
+  vals.forEach((v, i) => {
+    const x = L + i * step + (step - bw) / 2, h = Math.max(0, y(0) - y(v));
+    if (v) g += `<path d="M${x},${y(0)}v${-Math.max(0, h - 3)}q0,-3 3,-3h${bw - 6}q3,0 3,3v${Math.max(0, h - 3)}z" class="ibar"/>`;
+    g += `<rect x="${L + i * step}" y="${T}" width="${step}" height="${H - T - B}" class="hit" data-tip="${esc(tips[i])}"/>`;
+    if (labels[i]) g += `<text x="${x + bw / 2}" y="${H - 6}" class="sx" text-anchor="middle">${esc(labels[i])}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" class="ichart" role="img">${g}</svg>`;
+}
+function insHeat(I) {
+  if (I.heat.length < 2) return '';
+  const rows = I.heat.slice(-14), max = Math.max(1, ...rows.flatMap((r) => r.h));
+  const W = 640, L = 64, cw = (W - L) / 24, ch = 18, H = rows.length * (ch + 2) + 20;
+  let g = '';
+  rows.forEach((r, i) => {
+    const yy = i * (ch + 2);
+    g += `<text x="${L - 8}" y="${yy + ch - 5}" class="sy">${esc(fmtDay(new Date(r.day + 'T12:00')))}</text>`;
+    r.h.forEach((v, h) => { g += `<rect x="${L + h * cw + 1}" y="${yy}" width="${cw - 2}" height="${ch}" rx="3" class="icell${v ? '' : ' zero'}" style="${v ? `fill-opacity:${(0.12 + 0.88 * v / max).toFixed(2)}` : ''}" data-tip="${esc(`${fmtDay(new Date(r.day + 'T12:00'))}, ${hourName(h)}: ${iPlural(v, 'line')}`)}"/>`; });
+  });
+  for (let h = 0; h < 24; h += 3) g += `<text x="${L + h * cw + cw / 2}" y="${H - 4}" class="sx" text-anchor="middle">${esc(hourName(h))}</text>`;
+  return `<h2 class="sh2">Day by hour <small>darker is busier${I.heat.length > 14 ? ' · the last 14 days' : ''}</small></h2><svg viewBox="0 0 ${W} ${H}" class="ichart" role="img" aria-label="Lines by day and hour">${g}</svg>`;
+}
+
+function insOverview(I) {
+  const T = I.totals;
+  if (!T.lines) return `${insControls(I)}<div class="empty-box">Nothing was said in this span.</div>`;
+  const tile = (l, v, sub) => `<div class="stile itile"><div class="sth"><span>${l}</span></div><b>${v}</b>${sub ? `<small>${sub}</small>` : ''}</div>`;
+  const f = insFindings(I);
+  const days = I.days.length > 1 ? `<h2 class="sh2">Lines per day</h2>${insBars(I.days.map((d) => d.lines), I.days.map((d, i) => I.days.length <= 14 || i % Math.ceil(I.days.length / 10) === 0 ? fmtDay(new Date(d.day + 'T12:00')) : ''), I.days.map((d) => `${fmtDay(new Date(d.day + 'T12:00'))}: ${iPlural(d.lines, 'line')}, ${iPlural(d.words, 'word')}, ${iPlural(d.people, 'person', 'people')}`))}` : '';
+  return `${insControls(I)}
+    <div class="sgrid itiles">${tile('Talking', `${T.hours}h`, `over ${iPlural(T.calls, 'call')}`)}${tile('Lines', nf(T.lines), `${nf(T.words)} words`)}${tile('People', nf(T.people), `in ${iPlural(T.channels, 'channel')}`)}${tile('Different words', nf(T.vocab))}${tile('Questions', nf(T.questions), T.questions ? `${iPct(T.answered, T.questions)}% answered` : '')}</div>
+    ${f.length ? `<h2 class="sh2">What stands out</h2><ul class="ifind">${f.map((x) => `<li>${x}</li>`).join('')}</ul>` : ''}
+    ${days}
+    <h2 class="sh2">Time of day <small>lines said in each hour</small></h2>${insBars(I.hours, I.hours.map((_, h) => h % 3 ? '' : hourName(h)), I.hours.map((v, h) => `${hourName(h)}: ${iPlural(v, 'line')}`))}
+    ${insHeat(I)}
+    <h2 class="sh2">Channels</h2>
+    <table class="stable"><tr><th>Channel</th><th>Lines</th><th>People</th><th>Busiest hour</th><th>Who talks most</th></tr>${I.channels.map((c) => `<tr><td>${esc(c.name)}<small class="un"> · ${esc(c.server || '')}</small></td><td>${nf(c.lines)}</td><td>${c.people}</td><td>${esc(hourName(c.peakHour))}</td><td>${c.top.map((t) => `${insWho(t.id, t.name)} ${t.share}%`).join(', ')}</td></tr>`).join('')}</table>`;
+}
+
+function insWords(I) {
+  if (!I.totals.lines) return `${insControls(I)}<div class="empty-box">Nothing was said in this span.</div>`;
+  const max = Math.max(1, ...I.words.map((w) => w.n));
+  const wbtn = (w, n) => `<button class="iword" data-q="${esc(w)}" title="Search every transcript for “${esc(w)}”">${esc(w)}<small>${nf(n)}</small></button>`;
+  const bars = I.words.slice(0, 30).map((w) => `<button class="ibrow" data-q="${esc(w.w)}" title="Search every transcript for “${esc(w.w)}”"><span>${esc(w.w)}</span><i style="width:${(100 * w.n / max).toFixed(1)}%"></i><b>${nf(w.n)}</b></button>`).join('');
+  const sw = I.swearWords;
+  const sig = I.people.filter((p) => p.signature.length).slice(0, 20);
+  return `${insControls(I)}
+    <h2 class="sh2">Most used words <small>leaving out small words like "the", "yeah" and "like" · select one to search for it</small></h2><div class="ibars">${bars}</div>
+    <h2 class="sh2">Common phrases <small>two words</small></h2><div class="iwords">${I.phrases.map((p) => wbtn(p.w, p.n)).join('')}</div>
+    <h2 class="sh2">Common phrases <small>three words</small></h2><div class="iwords">${I.phrases3.map((p) => wbtn(p.w, p.n)).join('')}</div>
+    ${I.rising.length ? `<h2 class="sh2">New and rising <small>said far more in the last 24 hours than before</small></h2>
+      <table class="stable"><tr><th>Word</th><th>Last 24 hours</th><th>Before</th><th title="How much more often, allowing for how much was said in each span">More often</th></tr>${I.rising.map((r) => `<tr><td>${wbtn(r.w, r.now)}</td><td>${nf(r.now)}</td><td>${nf(r.before)}</td><td>${r.before ? r.x + '×' : 'new'}</td></tr>`).join('')}</table>`
+      : I.period === '24h' ? '' : '<h2 class="sh2">New and rising</h2><div class="hint">Nothing stands out in the last 24 hours compared with before.</div>'}
+    <h2 class="sh2">Each person's own words <small>words and phrases they use far more than everyone else</small></h2>
+    <table class="stable isig"><tr><th>Person</th><th>Their words</th><th>Their phrases</th></tr>${sig.map((p) => `<tr><td>${insWho(p.id, p.name)}</td><td>${p.signature.map((s) => `<span class="iw" title="${nf(s.n)} times">${esc(s.w)}</span>`).join(' ')}</td><td>${p.phrases.map((s) => `<span class="iw" title="${nf(s.n)} times">${esc(s.g)}</span>`).join(' ') || '<span class="un">–</span>'}</td></tr>`).join('')}</table>
+    ${sw.length ? `<h2 class="sh2">Swearing <small>${nf(I.totals.swears)} in all, ${(100 * I.totals.swears / Math.max(1, I.totals.words)).toFixed(1)}% of words</small></h2><div class="iwords">${sw.map((w) => wbtn(w.w, w.n)).join('')}</div>` : ''}`;
+}
+
+function insTalk(I) {
+  if (!I.people.length) return `${insControls(I)}<div class="empty-box">Nobody has said 30 lines in this span yet.</div>`;
+  const cols = [
+    ['name', 'Person', 'Who it is', (p) => insWho(p.id, p.name)],
+    ['share', 'Talk', 'Share of all talking time', (p) => p.share + '%'],
+    ['wpl', 'Words a line', 'Average words in each line', (p) => p.wpl],
+    ['wordsPerTurn', 'Words a turn', 'Words said before someone else speaks (lines back to back count as one turn)', (p) => p.wordsPerTurn],
+    ['qRate', 'Questions', 'Lines that end in a question mark, per 100 lines', (p) => p.qRate],
+    ['asked', 'Answered', 'Of their real questions, how many someone answered', (p) => p.asked ? `${iPct(p.askedAnswered, p.asked)}% <small class="un">of ${nf(p.asked)}</small>` : '–', (p) => p.asked ? p.askedAnswered / p.asked : -1],
+    ['answered', 'Answers', 'Questions from others they answered', (p) => nf(p.answered)],
+    ['overRate', 'Cuts in', 'Lines that start while someone else is still talking, per 100 lines', (p) => p.overRate],
+    ['swearRate', 'Swears', 'Swear words per 100 lines', (p) => p.swearRate],
+    ['we', '"We"', 'Share of their "I" and "we" words that are "we": higher talks more as the group', (p) => p.selfShare == null ? '–' : (100 - p.selfShare) + '%', (p) => p.selfShare == null ? -1 : 100 - p.selfShare],
+    ['variety', 'Variety', 'Different words in every 100 they say (needs 500 words)', (p) => p.variety ?? '–', (p) => p.variety ?? -1],
+    ['peakHour', 'Usually on', 'The hour they say the most in', (p) => esc(hourName(p.peakHour)), (p) => (p.peakHour + 18) % 24],
+    ['reply', 'Replies most to', 'Whose lines they reply to most often', (p) => p.topReply ? `${insWho(p.topReply.id, p.topReply.name)} <small class="un">${nf(p.topReply.n)}</small>` : '–', (p) => p.topReply?.n || 0],
+  ];
+  const col = cols.find((c) => c[0] === insSort.k) || cols[1];
+  const val = col[4] || ((p) => col[0] === 'name' ? insName(p.id, p.name).toLowerCase() : p[col[0]]);
+  const rows = I.people.slice().sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * insSort.dir; });
+  const pmax = Math.max(1, ...I.pairs.map((p) => p.ab + p.ba));
+  return `${insControls(I)}
+    <p class="hint" style="margin-top:0">The 40 people who talk most, each with at least 30 lines in this span. Select a heading to sort by it; hover a heading to see what it counts.</p>
+    <div class="itable-wrap"><table class="stable itable"><tr>${cols.map(([k, l, d]) => `<th title="${esc(d)}"><button class="isort${k === insSort.k ? ' on' : ''}" data-sort="${k}">${esc(l)}${k === insSort.k ? (insSort.dir < 0 ? ' ↓' : ' ↑') : ''}</button></th>`).join('')}</tr>
+      ${rows.map((p) => `<tr>${cols.map((c) => `<td>${c[3](p)}</td>`).join('')}</tr>`).join('')}</table></div>
+    <h2 class="sh2">Who replies to whom <small>a line said within 3 seconds of someone else's counts as a reply</small></h2>
+    <div class="ipairs">${I.pairs.map((p) => `<div class="ipair"><span>${insWho(p.a, p.aName)} <span class="un">and</span> ${insWho(p.b, p.bName)}</span><i><em style="width:${(100 * p.ab / pmax).toFixed(1)}%" data-tip="${esc(`${insName(p.b, p.bName)} replying to ${insName(p.a, p.aName)}: ${p.ab}`)}"></em><em class="b" style="width:${(100 * p.ba / pmax).toFixed(1)}%" data-tip="${esc(`${insName(p.a, p.aName)} replying to ${insName(p.b, p.bName)}: ${p.ba}`)}"></em></i><b>${nf(p.ab + p.ba)}</b></div>`).join('')}</div>
+    <p class="hint">The two shades split each pair by who was replying. These count timing only: a quick line after someone else's is usually, not always, a reply.</p>`;
+}
+
+function wireInsights(box, repaint) {
+  box.querySelectorAll('[data-i]').forEach((s) => s.addEventListener('change', () => { insOpts[s.dataset.i] = s.value; repaint(); }));
+  box.querySelectorAll('[data-q]').forEach((b) => b.onclick = () => { showView('calls'); const q = $('#hq'); q.value = b.dataset.q; q.dispatchEvent(new Event('input')); q.focus(); });
+  box.querySelectorAll('[data-open]').forEach((b) => b.onclick = () => { showView('calls'); openCall(b.dataset.open, +b.dataset.t); });
+  box.querySelectorAll('[data-sort]').forEach((b) => b.onclick = () => { const k = b.dataset.sort; insSort = { k, dir: insSort.k === k ? -insSort.dir : (k === 'name' ? 1 : -1) }; repaint(); });
+}
 async function renderStudyPage() {
   const box = $('#view-study');
   studyTip().style.display = 'none';
   if (!box.firstChild) box.innerHTML = '<div class="page"><div class="pwait"><span class="s"></span>Loading…</div></div>';
-  const S = await getStudy(true);
-  if (!S) { box.innerHTML = '<div class="page"><p>The server isn\'t running.</p></div>'; return; }
+  const reads = serverSettings?.personality !== false;          // the read tabs only while personality reads are on
+  const S = reads ? await getStudy(true) : null;
+  if (reads && !S) { box.innerHTML = '<div class="page"><p>The server isn\'t running.</p></div>'; return; }
   if (curView !== 'study') return;
-  const people = S.people;
+  const people = S ? S.people : [];
+  let paintSeq = 0;
 
   function groupTab() {
     const [lo, hi] = traitScale(studyGroupTrait);
@@ -3752,9 +4176,14 @@ async function renderStudyPage() {
     <p class="hint"><button class="linkbtn" data-a="how">How reads work</button>: the steps, the full codebook and the rules.</p>`;
 
   function paint() {
-    const tabs = [['group', 'Compare people', 'Everyone on one trait'], ['check', 'Check the reads', 'Fairness, tests and coder agreement']];
-    if (!tabs.some(([k]) => k === studyTab)) studyTab = 'group';
-    const body = studyTab === 'check' ? checkTab() : groupTab();
+    const tabs = [['overview', 'Overview', 'What stands out and when people talk'], ['words', 'Word patterns', 'Words, phrases and what\'s new'],
+      ['talk', 'How people talk', 'Each person\'s style and who replies to whom'],
+      ...(S ? [['group', 'Compare people', 'Everyone on one personality trait'], ['check', 'Check the reads', 'Fairness, tests and coder agreement']] : [])];
+    if (!tabs.some(([k]) => k === studyTab)) studyTab = 'overview';
+    const insTab = ['overview', 'words', 'talk'].includes(studyTab);
+    const insHtml = (I) => !I ? '<p>The server isn\'t running.</p>' : studyTab === 'words' ? insWords(I) : studyTab === 'talk' ? insTalk(I) : insOverview(I);
+    const ready = insTab && insCache && insCache.key === insOpts.srv + '|' + insOpts.period && Date.now() - insCache.at < 60000 ? insCache.I : null;
+    const body = insTab ? `<div class="ins-body">${ready ? insHtml(ready) : '<div class="pwait"><span class="s"></span>Going through every line…</div>'}</div>` : studyTab === 'check' ? checkTab() : groupTab();
     const cur = tabs.find(([k]) => k === studyTab);
     box.innerHTML = `<div class="page sub-page study-page">
       <nav class="subnav" aria-label="Study"><div class="subnav-h">Study</div>${tabs.map(([k, l, d]) => `<button data-tab="${k}" class="${k === studyTab ? 'on' : ''}" aria-current="${k === studyTab ? 'page' : 'false'}"><b>${l}</b><small>${d}</small></button>`).join('')}</nav>
@@ -3764,6 +4193,19 @@ async function renderStudyPage() {
     box.querySelectorAll('[data-person]').forEach((b) => b.onclick = () => openPeople(b.dataset.person));
     box.querySelector('[data-a="how"]')?.addEventListener('click', () => openHowReads());
     wireTips(box);
+    if (insTab) {
+      const el = box.querySelector('.ins-body');
+      if (ready) wireInsights(el, paint);
+      else {
+        const my = ++paintSeq;
+        getInsights().then((I) => {
+          if (my !== paintSeq || curView !== 'study' || !el.isConnected) return;
+          el.innerHTML = insHtml(I);
+          el.querySelectorAll('[data-person]').forEach((b) => b.onclick = () => openPeople(b.dataset.person));
+          wireTips(el); wireInsights(el, paint);
+        });
+      }
+    }
   }
   paint();
 }
@@ -4269,13 +4711,26 @@ addEventListener('keydown', (e) => {
   if (e.metaKey && e.shiftKey && e.key.toLowerCase() === 'f') { e.preventDefault(); if (curView !== 'calls') showView('calls'); requestAnimationFrame(() => $('#hq').focus()); }
 });
 
-let ws, backoff = 500, callsTimer;
+let ws, backoff = 500, callsTimer, stateDirty = false, feedDirty = false, feedAppended = false;
+// the Resources history keeps sampling while hidden, so its charts don't join across a gap
+function sampleRes(st) { if (st.res?.cpu != null) { resHist.push({ t: st.now, ...st.res }); while (resHist.length && st.now - resHist[0].t > 300000) resHist.shift(); } }
+// While the window is hidden nothing is drawn; the data stays current and the page is drawn once when it's shown.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (feedDirty) {
+    feedDirty = false; renderWhere(); renderAll(); renderCalls();
+    if (feedAppended && !feedFollow) $('#jump').style.display = 'block';   // new lines came in below where you were reading
+  }
+  feedAppended = false;
+  if (stateDirty) { stateDirty = false; renderState(); loadVoice(); if (voiceRedraw) redrawVoice(); if (!calls.length) renderWhere(); }
+});
 function connect() {
   ws = new WebSocket(`ws://${location.host}/live`);
   ws.onopen = async () => { backoff = 500; await loadCalls(); showCall(true); loadUpdate(); loadModels(); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === 'state') { liveState = m; renderState(); loadVoice(); if (voiceRedraw) redrawVoice(); if (!calls.length) renderWhere(); emit('state', m); }
+    if (m.type === 'state' && document.hidden) { liveState = m; sampleRes(m); stateDirty = true; emit('state', m); }   // hidden: catch up when shown
+    else if (m.type === 'state') { liveState = m; renderState(); loadVoice(); if (voiceRedraw) redrawVoice(); if (!calls.length) renderWhere(); emit('state', m); }
     else if (m.type === 'replace') {
       // the 2B pass rewrote some live lines: swap them in place
       const d = today(), gone = new Set(m.ids || []);
@@ -4296,7 +4751,11 @@ function connect() {
       setTimeout(() => emit('line', m), 0);
       if (!/^user-\d{4}$/.test(m.speaker) && m.user) names[m.user] = m.speaker;
       const d = today();
-      if (dayCache.has(d)) { const arr = dayCache.get(d); arr.push(m); arr.sort((a, b) => a.t - b.t); }
+      if (dayCache.has(d)) {                    // in time order: lines mostly arrive last, so search from the end
+        const arr = dayCache.get(d); let i = arr.length;
+        while (i > 0 && arr[i - 1].t > m.t) i--;
+        arr.splice(i, 0, m);
+      }
       // the call this line belongs to: the open call in its channel (several can run at once)
       const partFor = (c) => partsOf(c).find((p) => p.day === d && (!m.ch || !p.ch || p.ch === m.ch) && m.t - p.end < GAP);
       const top = (m.ch && calls.find((c) => partFor(c) && partsOf(c).some((p) => p.ch === m.ch)))
@@ -4312,13 +4771,14 @@ function connect() {
         if (m.ch && !top.ch) Object.assign(top, { ch: m.ch, chName: m.chName, guildName: m.guildName });
         rebuildChannels();
         const cur = currentCall();
-        if (cur && cur.calls.includes(top)) {
+        if (cur && cur.calls.includes(top) && document.hidden) { allLines = callRecs(cur); lines = linesOf(cur, allLines); feedDirty = true; if (lines[lines.length - 1] === m && !filter && !query) feedAppended = true; }
+        else if (cur && cur.calls.includes(top)) {
           allLines = callRecs(cur); lines = linesOf(cur, allLines);   // (a channel's lines come from several days)
           const atEnd = lines[lines.length - 1] === m;
           rebuildKeys(); const s = stats(); renderKPIs(s); renderBars(s); renderWords(); renderWhere();
           if (atEnd && !filter && !query) renderFeed(true); else renderFeed();
         }
-        renderCalls();
+        if (!document.hidden) renderCalls(); else feedDirty = true;
       } else {
         // a new call (new channel, or after a long quiet gap)
         clearTimeout(callsTimer);
@@ -4328,8 +4788,8 @@ function connect() {
   };
   ws.onclose = () => { liveState = null; renderState(); if (voiceData) { voiceData = null; voiceSig = ''; voiceAt = 0; renderCalls(); } setTimeout(connect, backoff = Math.min(backoff * 2, 5000)); };
 }
-setInterval(() => { if (isToday() && lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } }, 5000);
-setInterval(() => renderCalls(), 30000);     // "LIVE" badge & durations age out
+setInterval(() => { if (!document.hidden && isToday() && lines.length) { const s = stats(); renderActivity(s); renderTimeline(s); } }, 5000);
+setInterval(() => { if (!document.hidden) renderCalls(); else feedDirty = true; }, 30000);     // "LIVE" badge & durations age out
 addEventListener('resize', () => { const s = stats(); renderActivity(s); renderTimeline(s); });
 // Charts follow their panel's size (compact-mode panels resize as content and the window change).
 if (window.ResizeObserver) {
@@ -4356,7 +4816,6 @@ let curView = 'calls';
 const keptScroll = {};
 function showView(v, arg, how = 'replace') {
   if (SHARE || !VIEWS.includes(v)) v = 'calls';
-  if (v === 'study' && serverSettings?.personality === false) v = 'calls';   // Study is only there while reads are on
   const was = curView;
   if (v === was && v !== 'people' && v !== 'study') return;            // already here: keep what's on the page (and anything typed)
   if (was === 'calls') { keptScroll.feed = $('#feed').scrollTop; keptScroll.calls = $('#calls').scrollTop; }

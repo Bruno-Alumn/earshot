@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
+const webshare = require('./webshare');
 const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf } = require('./autojoin');
 
 // Auto-join: a free account hops into an open, flagged voice channel and moves
@@ -177,16 +178,23 @@ function loadAccounts() {
     try { const v = safeStorage.decryptString(Buffer.from(a.proxyEnc, 'base64')); if (v) { a.proxy = v; delete a.proxyEnc; } }
     catch {}                              // keep it: the account shows a proxy that needs attention
   }
+  for (const a of list) {                 // saved sign-in details (email, username, display name, password), encrypted the same way
+    if (!a.credsEnc) continue;
+    try { const v = JSON.parse(safeStorage.decryptString(Buffer.from(a.credsEnc, 'base64'))); if (v && typeof v === 'object') { a.creds = v; delete a.credsEnc; } }
+    catch {}
+  }
   return list;
 }
 function saveAccounts() {
   try {
     const enc = (() => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } })();
-    const out = accounts.map(({ proxy, proxyEnc, ...rest }) => {
-      if (!proxy) return proxyEnc ? { ...rest, proxyEnc } : rest;
-      if (!enc) return { ...rest, proxy };
-      try { return { ...rest, proxyEnc: safeStorage.encryptString(proxy).toString('base64') }; }
-      catch { return { ...rest, proxy }; }
+    const seal = (v) => { try { return safeStorage.encryptString(v).toString('base64'); } catch { return null; } };
+    const out = accounts.map(({ proxy, proxyEnc, creds, credsEnc, ...rest }) => {
+      const o = { ...rest };
+      if (proxy) { const e = enc && seal(proxy); if (e) o.proxyEnc = e; else o.proxy = proxy; } else if (proxyEnc) o.proxyEnc = proxyEnc;
+      if (creds && Object.values(creds).some(Boolean)) { const e = enc && seal(JSON.stringify(creds)); if (e) o.credsEnc = e; else o.creds = creds; }
+      else if (credsEnc) o.credsEnc = credsEnc;
+      return o;
     });
     fs.writeFileSync(accountsFile(), JSON.stringify(out, null, 1));
   } catch {}
@@ -279,7 +287,8 @@ function accountSummary(a) {
     autoStopped: Object.values(r.autoStop || {}),
     guilds: (a.directory || []).length,
     proxy: px.ok && (px.proxy || px.pac) ? redactProxy(a.proxy) : '',
-    proxyMode: !px.ok ? 'invalid' : px.proxy ? 'proxy' : px.pac ? 'pac' : px.direct ? 'direct' : 'system' };
+    proxyMode: !px.ok ? 'invalid' : px.proxy ? 'proxy' : px.pac ? 'pac' : px.direct ? 'direct' : 'system',
+    hasDetails: !!(a.creds || a.credsEnc) };
 }
 const appState = () => {
   const m = mainAccount();
@@ -318,12 +327,26 @@ const loadNames = () => { try { return JSON.parse(fs.readFileSync(namesFile(), '
 const fromDash = (e) => dash && !dash.isDestroyed() && e.sender === dash.webContents &&
   e.senderFrame === dash.webContents.mainFrame && isDashUrl(e.senderFrame.url);
 
+// Every account's microphone is silent (below), so Discord's Krisp noise cancellation and Krisp voice
+// detection would only ever filter silence, at ~5-9% of a core per window. Turn both off in the
+// account's stored voice settings before Discord reads them (local to Earshot's copy of the account;
+// nothing is synced). Discord removes window.localStorage later, so this runs first. A brand-new account
+// has no stored settings yet: Krisp goes off from its second page load (after Discord saves them).
+const KRISP_OFF = `try {
+  const s = JSON.parse(localStorage.getItem('MediaEngineStore') || 'null'); let ch = false;
+  if (s && typeof s === 'object') for (const k of ['default', 'stream']) {
+    const c = s[k]; if (!c || typeof c !== 'object') continue;
+    if (c.noiseCancellation !== false) { c.noiseCancellation = false; ch = true; }
+    if (c.modeOptions && typeof c.modeOptions === 'object' && c.modeOptions.vadUseKrisp !== false) { c.modeOptions.vadUseKrisp = false; ch = true; }
+  }
+  if (ch) localStorage.setItem('MediaEngineStore', JSON.stringify(s));
+} catch (e) {}`;
 // Listener accounts: replace the page's camera/microphone access with a silent
 // microphone, before Discord's own code runs. The real devices are never opened
 // (their session also refuses media permission, so a bypass fails closed).
-const LISTENER_PRELUDE = `(() => { try {
+const LISTENER_PRELUDE = `(() => { ${KRISP_OFF} try {
   const deny = () => Promise.reject(new DOMException('Listener accounts have no camera or microphone', 'NotAllowedError'));
-  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; ctx ||= new C(); return ctx.createMediaStreamDestination().stream; };   // one context, reused
+  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; if (!ctx) { try { ctx = new C({ sinkId: { type: 'none' } }); } catch { ctx = new C(); } } return ctx.createMediaStreamDestination().stream; };   // one context, reused; it plays nowhere (no output device to keep running)
   const md = MediaDevices.prototype;
   md.getUserMedia = function (c) { return c && c.audio ? Promise.resolve(silent()) : deny(); };
   md.getDisplayMedia = function () { return deny(); };
@@ -333,8 +356,8 @@ const LISTENER_PRELUDE = `(() => { try {
 // real one, before its own code runs, so nothing you say can reach a call even
 // if Discord shows you unmuted. Camera and screen sharing still work on your own
 // account. (Every session also refuses real-microphone requests, so a bypass fails closed.)
-const MIC_OFF_PRELUDE = `(() => { try {
-  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; ctx ||= new C(); return ctx.createMediaStreamDestination().stream; };   // one context, reused
+const MIC_OFF_PRELUDE = `(() => { ${KRISP_OFF} try {
+  let ctx; const silent = () => { const C = window.AudioContext || window.webkitAudioContext; if (!ctx) { try { ctx = new C({ sinkId: { type: 'none' } }); } catch { ctx = new C(); } } return ctx.createMediaStreamDestination().stream; };   // one context, reused; it plays nowhere (no output device to keep running)
   const md = MediaDevices.prototype, real = md.getUserMedia;
   md.getUserMedia = function (c) {
     if (!c || !c.audio) return real.call(this, c);
@@ -426,7 +449,13 @@ ipcMain.on('ct:open-plugins', (e) => { if (fromDash(e)) { const d = path.join(RO
 ipcMain.handle('ct:app-settings', (e) => (fromDash(e) ? appSettings() : null));
 ipcMain.handle('ct:set-app-setting', (e, key, value) => (fromDash(e) ? setAppSetting(String(key), !!value) : null));
 ipcMain.handle('ct:transcribe', (e, guildId, channelId) => (fromDash(e) ? transcribeChannel(String(guildId), String(channelId)) : null));
-ipcMain.handle('ct:add-account', (e) => (fromDash(e) ? addAccount() : null));
+ipcMain.handle('ct:add-account', (e, mode, proxy, creds) => (fromDash(e) ? addAccount(mode === 'create' ? 'create' : 'signin', proxy, creds) : null));
+ipcMain.handle('ct:account-details', (e, id) => (fromDash(e) ? accountDetails(String(id)) : null));
+ipcMain.handle('ct:set-account-details', (e, id, c) => (fromDash(e) ? setAccountDetails(String(id), c) : null));
+ipcMain.handle('ct:webshare', (e) => (fromDash(e) ? { hasKey: !!webshareKey() } : null));
+ipcMain.handle('ct:webshare-key', (e, key) => (fromDash(e) ? setWebshareKey(String(key == null ? '' : key)) : null));
+ipcMain.handle('ct:webshare-list', (e, fresh) => (fromDash(e) ? webshareList(!!fresh) : null));
+ipcMain.handle('ct:webshare-use', (e, id, proxyId) => (fromDash(e) ? useWebshare(String(id), String(proxyId)) : null));
 ipcMain.handle('ct:remove-account', (e, id) => (fromDash(e) ? removeAccount(String(id)) : null));
 ipcMain.handle('ct:set-role', (e, id, role) => (fromDash(e) ? setRole(String(id), role === 'main' ? 'main' : 'listener') : null));
 ipcMain.handle('ct:set-proxy', (e, id, value) => (fromDash(e) ? setAccountProxy(String(id), String(value == null ? '' : value)) : null));
@@ -523,6 +552,69 @@ async function setAccountProxy(id, value) {
   if (w) w.webContents.reload();      // every new connection uses the new proxy
   broadcast(); buildMenu();
   return { ok: true, account: accountSummary(a) };
+}
+
+// ----------------------------------------------------------------- Webshare
+// Your Webshare API key (encrypted at rest when the OS can) lists your proxies
+// to pick one for an account. The key and the proxies' passwords stay here;
+// the dashboard gets addresses, places and which account uses each.
+const webshareFile = () => path.join(app.getPath('userData'), 'webshare.json');
+function webshareKey() {
+  try {
+    const d = JSON.parse(fs.readFileSync(webshareFile(), 'utf8'));
+    if (d.keyEnc) return safeStorage.decryptString(Buffer.from(d.keyEnc, 'base64'));
+    return d.key || '';
+  } catch { return ''; }
+}
+let webshareCache = null;                 // { at, key, list }: five minutes, so picking doesn't hit the API each time
+async function setWebshareKey(key) {
+  key = key.trim();
+  webshareCache = null;
+  if (!key) { try { fs.unlinkSync(webshareFile()); } catch {} return { ok: true, hasKey: false }; }
+  if (!/^[A-Za-z0-9_.-]{8,200}$/.test(key)) return { error: 'That doesn\'t look like a Webshare API key. Copy it from Webshare\'s API keys page.' };
+  let list;
+  try { list = await webshare.listProxies(key, webshareFetch); }      // check it works before saving it
+  catch (err) { return { error: err.message || 'Couldn\'t check that key with Webshare.' }; }
+  const enc = (() => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } })();
+  const data = enc ? { keyEnc: safeStorage.encryptString(key).toString('base64') } : { key };
+  try { fs.writeFileSync(webshareFile(), JSON.stringify(data), { mode: 0o600 }); } catch { return { error: 'Couldn\'t save the key.' }; }
+  webshareCache = { at: Date.now(), key, list };
+  return { ok: true, hasKey: true, count: list.length };
+}
+const webshareFetch = (url, opts) => (require('electron').net?.fetch || fetch)(url, opts);
+async function webshareAll(fresh) {
+  const key = webshareKey();
+  if (!key) return { needKey: true };
+  if (!fresh && webshareCache && webshareCache.key === key && Date.now() - webshareCache.at < 300000) return { list: webshareCache.list };
+  try {
+    const list = await webshare.listProxies(key, webshareFetch);
+    webshareCache = { at: Date.now(), key, list };
+    return { list };
+  } catch (err) { return { error: err.message || 'Couldn\'t list your Webshare proxies.' }; }
+}
+// which of your accounts already use a proxy (same host, port and username)
+function proxyUsers(p) {
+  return accounts.filter((a) => {
+    const q = !a.proxyEnc && parseProxy(a.proxy);
+    return q && q.ok && q.proxy && q.proxy.host === p.host.toLowerCase() && q.proxy.port === p.port && (q.proxy.username || '') === p.username;
+  }).map((a) => ({ id: a.id, label: nameOf(a) }));
+}
+async function webshareList(fresh) {
+  const r = await webshareAll(fresh);
+  if (!r.list) return r;
+  return { proxies: r.list.map((p) => ({ ...webshare.publicView(p), usedBy: proxyUsers(p) })) };
+}
+async function websharePick(proxyId) {
+  const r = await webshareAll(false);
+  if (!r.list) return { error: r.error || 'Add your Webshare API key first.' };
+  let p = r.list.find((x) => x.id === proxyId);
+  if (!p) { const r2 = await webshareAll(true); p = r2.list?.find((x) => x.id === proxyId); }   // the list may have changed
+  return p ? { proxy: p } : { error: 'That proxy is no longer on your Webshare account. Refresh the list.' };
+}
+async function useWebshare(id, proxyId) {
+  const p = await websharePick(proxyId);
+  if (p.error) return { error: p.error };
+  return setAccountProxy(id, webshare.proxyString(p.proxy));
 }
 
 // The credentials Chromium asks for when a proxy wants a username and
@@ -649,6 +741,7 @@ function discordUrl(a, path_ = '/app') {
     const u = new URL(process.env.CT_DISCORD_URL);
     if (a.testQuery) for (const [k, v] of new URLSearchParams(a.testQuery)) u.searchParams.set(k, v);
     const m = /^\/channels\/(\d+)\/(\d+)/.exec(path_); if (m) u.searchParams.set('ch', m[2]);
+    if (path_ === '/register' || path_ === '/login') u.searchParams.set('page', path_.slice(1));
     return u.href;
   }
   return 'https://discord.com' + path_;
@@ -705,11 +798,69 @@ async function showDiscord(id) {
 }
 
 // ---- adding, removing and assigning accounts
-function addAccount() {
+// 'signin' opens Discord's sign-in page for an account you already have; 'create' opens
+// its sign-up page in the new account's own window, so the new account is signed in
+// there as soon as it's made. You fill in the form, the captcha and the email check yourself.
+// Sign-in details you keep for an account: only these fields, trimmed, and never sent with the account list.
+const CRED_KEYS = ['email', 'username', 'displayName', 'password'];
+function cleanCreds(c) {
+  if (!c || typeof c !== 'object') return null;
+  const o = {};
+  for (const k of CRED_KEYS) { const v = typeof c[k] === 'string' ? (k === 'password' ? c[k] : c[k].trim()) : ''; if (v) o[k] = v.slice(0, 200); }
+  return Object.keys(o).length ? o : null;
+}
+function accountDetails(id) {
+  const a = acct(id); if (!a) return { error: 'That account no longer exists.' };
+  if (a.credsEnc) return { error: 'The saved details could not be unlocked on this computer.' };
+  return { ok: true, label: nameOf(a), creds: { email: '', username: '', displayName: '', password: '', ...(a.creds || {}) } };
+}
+function setAccountDetails(id, c) {
+  const a = acct(id); if (!a) return { error: 'That account no longer exists.' };
+  const v = cleanCreds(c);
+  if (v) a.creds = v; else delete a.creds;
+  delete a.credsEnc;
+  saveAccounts(); broadcast();
+  return { ok: true };
+}
+
+// proxy (optional), chosen before the window opens so Discord never sees the account without it:
+// { webshare: '<proxy id>' } or { value: 'host:port:user:pass' / a URL }.
+// From the menu: the dashboard asks how the new account connects first (its proxy), then opens it.
+function askNewAccount(mode) {
+  if (dash && !dash.isDestroyed() && !dash.webContents.isLoading() && dash.webContents.getURL().startsWith(BASE)) {
+    dash.show(); dash.focus(); dash.webContents.send('ct:command', 'new-account:' + mode);
+  } else addAccount(mode);          // no dashboard yet: open it without a proxy, as before
+}
+async function addAccount(mode = 'signin', proxy = null, creds = null) {
   const id = 'acct-' + Date.now().toString(36);
   const a = { id, role: accounts.some((x) => x.role === 'main') ? 'listener' : 'main', partition: 'persist:discord-' + id, muted: true };
+  if (proxy && typeof proxy === 'object') {
+    let raw = '';
+    if (proxy.webshare) {
+      const p = await websharePick(String(proxy.webshare));
+      if (p.error) return { error: p.error };
+      raw = webshare.proxyString(p.proxy);
+    } else raw = String(proxy.value || '').trim();
+    if (raw) {
+      const px = parseProxy(raw);
+      if (!px.ok) return { error: px.error };
+      a.proxy = raw;
+      const r = await applyProxy(a);
+      if (!r.ok) { await session.fromPartition(a.partition).setProxy({ mode: 'system' }).catch(() => {}); proxyApplied.delete(a.partition); return { error: r.error }; }
+    }
+  }
+  const c = cleanCreds(creds); if (c) a.creds = c;
   accounts.push(a); saveAccounts(); buildMenu();
-  createDiscord(a, { show: true, url: discordUrl(a, '/login') });
+  const w = createDiscord(a, { show: true, url: discordUrl(a, mode === 'create' ? '/register' : '/login') });
+  if (mode === 'create') {
+    w.setTitle('New Discord account: sign up here, then confirm the email Discord sends you');
+    const done = (_e, u) => {                       // signed up and into the app: back to the usual title
+      if (/\/register\b|[?&]page=register/.test(u || '') || w.isDestroyed()) return;   // (page=register: the test harness)
+      w.setTitle(`Discord · ${nameOf(a)}${a.role === 'listener' ? ' (listener)' : ''}`);
+      w.webContents.off('did-navigate', done); w.webContents.off('did-navigate-in-page', done);
+    };
+    w.webContents.on('did-navigate', done); w.webContents.on('did-navigate-in-page', done);
+  }
   broadcast();
   return accountSummary(a);
 }
@@ -974,7 +1125,8 @@ function buildMenu() {
     { label: 'Show Dashboard', accelerator: 'CmdOrCtrl+1', click: showMain },
     { type: 'separator' },
     { label: 'Transcribe a Channel…', accelerator: 'CmdOrCtrl+Shift+T', click: () => { showMain(); dash?.webContents.executeJavaScript('window.openTranscribe?.()').catch(() => {}); } },
-    { label: 'Add Account…', click: () => addAccount() },
+    { label: 'Add Account…', click: () => askNewAccount('signin') },
+    { label: 'Create a New Discord Account…', click: () => askNewAccount('create') },
     { label: 'Open Shared View (for screen sharing)', click: () => openShareView() },
     { type: 'separator' },
     { label: 'Mute Call Audio (keeps transcribing)', type: 'checkbox', checked: !!mainAccount()?.muted, accelerator: 'CmdOrCtrl+Shift+M', click: (i) => setMuted(i.checked) },

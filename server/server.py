@@ -2792,6 +2792,315 @@ def save_test(uid: str, params: dict) -> dict:
     return {"ok": True, "tests": tests}
 
 
+# ---------------------------------------------------------------- insights (Study: patterns in what was said)
+STOPWORDS = set("""a about above after again against all am an and any are aren't as at be because been before being below between both
+but by can can't cannot could couldn't did didn't do does doesn't doing don't down during each few for from further had hadn't has hasn't
+have haven't having he he'd he'll he's her here here's hers herself him himself his how how's i i'd i'll i'm i've if in into is isn't it
+it's its itself let's me more most mustn't my myself no nor not of off on once only or other ought our ours ourselves out over own same
+shan't she she'd she'll she's should shouldn't so some such than that that's the their theirs them themselves then there there's these
+they they'd they'll they're they've this those through to too under until up very was wasn't we we'd we'll we're we've were weren't what
+what's when when's where where's which while who who's whom why why's with won't would wouldn't you you'd you'll you're you've your yours
+yourself yourselves oh yeah yes yep yup nah okay ok like just um uh uhh hmm mm so well right gonna gotta wanna got get go going really
+know think mean thing things one two also even still now then there's thats im dont its cant wont didnt doesnt isnt ive youre theyre
+whats lets that'd ain't kinda sorta actually literally maybe let see say said come came back way thank thanks hey hi hello bye
+will can't i'ma y'all""".split())
+SWEARS = re.compile(r"^(fuck\w*|motherfuck\w*|shit\w*|bullshit|damn\w*|goddamn\w*|bitch\w*|ass|asshole\w*|dumbass|crap|dick\w*|bastard\w*|cunt\w*|piss\w*|wtf|bruh)$")
+WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+SELF_WORDS = {"i", "i'm", "i've", "i'll", "i'd", "me", "my", "mine", "myself"}
+GROUP_WORDS = {"we", "we're", "we've", "we'll", "we'd", "us", "our", "ours", "ourselves", "let's"}
+REPLY_GAP_MS = 3000          # a line within 3 s of someone else's counts as a reply to them
+TURN_GAP_MS = 2500           # lines by the same person this close together are one turn
+_insights_cache: dict = {}
+
+
+def _words(text: str) -> list[str]:
+    return WORD_RE.findall(text.lower().replace("’", "'"))
+
+
+def _mattr(tokens: list[str], w: int = 100) -> float | None:
+    """Word variety: the share of different words in each run of 100, averaged (fair across people who say more or less)."""
+    if len(tokens) < 500:
+        return None
+    vals = [len(set(tokens[i:i + w])) / w for i in range(0, len(tokens) - w + 1, 50)]
+    return round(100 * sum(vals) / len(vals), 1)
+
+
+def _log_odds(a: dict, b: dict, prior: dict, a0: float = 1000.0, min_a: int = 5, top: int = 8) -> list:
+    """Words one person says far more than everyone else (weighted log-odds with a prior from all talk)."""
+    import math
+    A, B, N = sum(a.values()), sum(b.values()), sum(prior.values()) or 1
+    out = []
+    for w, x in a.items():
+        if x < min_a or w in STOPWORDS or len(w) < 3 or w.isdigit():
+            continue
+        al = a0 * prior.get(w, 0) / N + 0.01
+        y = b.get(w, 0)
+        d = math.log((x + al) / (A + a0 - x - al)) - math.log((y + al) / (B + a0 - y - al))
+        z = d / math.sqrt(1 / (x + al) + 1 / (y + al))
+        if z > 2:
+            out.append((w, round(z, 1), x))
+    out.sort(key=lambda t: -t[1])
+    return [{"w": w, "z": z, "n": n} for w, z, n in out[:top]]
+
+
+def insights(hub, srv: str = "", period: str = "all") -> dict:
+    """Patterns over every transcript (or one server, or a recent stretch): when people talk, what they say,
+    who answers whom. Worked out from the lines alone; no model is involved."""
+    import math
+    days = sorted(all_days())
+    stamp = (tuple((d, len(day_data(d)[0])) for d in days), srv, period)
+    hit = _insights_cache.get("k")
+    if hit and hit[0] == stamp and time.time() - hit[1] < 120:
+        return hit[2]
+    now_ms = int(time.time() * 1000)
+    since = {"7d": now_ms - 7 * 86_400_000, "24h": now_ms - 86_400_000}.get(period, 0)
+    servers: dict = {}
+    recs_all = []                                  # (rec, call) in scope, oldest first
+    qa: dict = {}
+    for d in days:
+        recs, calls = day_data(d)
+        if recs and recs[-1]["t"] < since:
+            continue
+        try:
+            qa.update(json.loads((TRANSCRIPTS / f"{d}.qa.json").read_text(encoding="utf-8")))
+        except Exception:
+            pass
+        for r in recs:
+            if r.get("bg") or not r.get("text") or r["t"] < since:
+                continue
+            call = next((c for c in calls if c["start"] <= r["t"] <= c["end"] and (not r.get("ch") or not c.get("ch") or r["ch"] == c["ch"])), None)
+            sk = srv_key(r if r.get("guild") or r.get("guildName") else (call or {}))
+            servers.setdefault(sk, r.get("guildName") or (call or {}).get("guildName") or ("Private calls" if sk == "dm" else "Unknown server"))
+            if srv and sk != srv:
+                continue
+            recs_all.append((r, call))
+    by_id = {r.get("id"): r for r, _ in recs_all if r.get("id")}
+    who = lambda r: r.get("user") or ("n:" + r.get("speaker", "?"))
+
+    P: dict = {}                                   # per person
+    words_all: dict = {}
+    grams_all: dict = {}
+    gram_people: dict = {}
+    hours = [0] * 24
+    heat: dict = {}                                # day -> [24] lines
+    per_day: dict = {}
+    chans: dict = {}
+    pairs: dict = {}
+    last_by_ch: dict = {}
+    turn_by_ch: dict = {}
+    longest = None
+    minute: dict = {}
+    call_ids = set()
+    first_t = recs_all[0][0]["t"] if recs_all else None
+    last_t = recs_all[-1][0]["t"] if recs_all else None
+    split_t = now_ms - 86_400_000 if last_t and last_t >= now_ms - 86_400_000 and period != "24h" else None   # 'new' means the real last 24 hours
+    recent_words: dict = {}
+    early_words: dict = {}
+
+    def person(r):
+        k = who(r)
+        p = P.get(k)
+        if not p:
+            p = P[k] = {"id": k, "name": r.get("speaker") or k, "lines": 0, "words": 0, "secs": 0.0, "q": 0, "swears": 0, "self": 0, "group": 0,
+                        "hours": [0] * 24, "tok": [], "counts": {}, "grams": {}, "over": 0, "overBy": 0, "replyTo": {}, "asked": 0, "askedAnswered": 0,
+                        "answered": 0, "calls": set(), "turns": 0}
+        p["name"] = r.get("speaker") or p["name"]
+        return p
+
+    for r, call in recs_all:
+        toks = _words(r["text"])
+        if len(toks) >= 30 and len(set(toks)) < 0.25 * len(toks):   # the transcriber stuck in a loop ("I was in a… I was in a…"): not real talk
+            continue
+        p = person(r)
+        tl = dt.datetime.fromtimestamp(r["t"] / 1000)
+        day = tl.date().isoformat()
+        p["lines"] += 1; p["words"] += len(toks); p["secs"] += max(0, r.get("end", r["t"]) - r["t"]) / 1000
+        p["hours"][tl.hour] += 1; hours[tl.hour] += 1
+        heat.setdefault(day, [0] * 24)[tl.hour] += 1
+        pd = per_day.setdefault(day, {"lines": 0, "words": 0, "people": set()})
+        pd["lines"] += 1; pd["words"] += len(toks); pd["people"].add(who(r))
+        if r["text"].rstrip().endswith("?"):
+            p["q"] += 1
+        for t in toks:
+            if SWEARS.match(t):
+                p["swears"] += 1
+            if t in SELF_WORDS:
+                p["self"] += 1
+            elif t in GROUP_WORDS:
+                p["group"] += 1
+            words_all[t] = words_all.get(t, 0) + 1
+            p["counts"][t] = p["counts"].get(t, 0) + 1
+            if split_t is not None:
+                bucket = recent_words if r["t"] >= split_t else early_words
+                bucket[t] = bucket.get(t, 0) + 1
+        p["tok"].extend(toks)
+        for n in (2, 3):
+            for i in range(len(toks) - n + 1):
+                g = toks[i:i + n]
+                if all(x in STOPWORDS for x in g) or len(set(g)) < n or (n == 3 and g[0] == g[2]):
+                    continue
+                g = " ".join(g)
+                grams_all[g] = grams_all.get(g, 0) + 1
+                p["grams"][g] = p["grams"].get(g, 0) + 1
+        mk = r["t"] // 60000
+        minute[mk] = minute.get(mk, 0) + 1
+        chk = ch_key(r if r.get("ch") else (call or {}))
+        c = chans.setdefault(chk, {"name": r.get("chName") or (call or {}).get("chName") or "?", "server": r.get("guildName") or (call or {}).get("guildName") or "",
+                                   "lines": 0, "words": 0, "people": {}, "calls": set(), "hours": [0] * 24})
+        c["lines"] += 1; c["words"] += len(toks); c["people"][who(r)] = c["people"].get(who(r), 0) + 1; c["hours"][tl.hour] += 1
+        if call:
+            c["calls"].add(call["id"]); p["calls"].add(call["id"]); call_ids.add(call["id"])
+        # replies and talking over: the line before this one in the same channel
+        prev = last_by_ch.get(chk)
+        if prev and who(prev) != who(r):
+            if r["t"] - prev.get("end", prev["t"]) < REPLY_GAP_MS:
+                kk = (who(prev), who(r))
+                pairs[kk] = pairs.get(kk, 0) + 1
+                p["replyTo"][who(prev)] = p["replyTo"].get(who(prev), 0) + 1
+            if r["t"] < prev.get("end", prev["t"]) - 1500 and r["t"] - prev["t"] > 1000:   # started well before they'd finished
+                p["over"] += 1; person(prev)["overBy"] += 1
+        if not prev or prev.get("end", prev["t"]) <= r.get("end", r["t"]):
+            last_by_ch[chk] = r
+        # turns: back-to-back lines by one person
+        tu = turn_by_ch.get(chk)
+        if tu and tu["who"] == who(r) and r["t"] - tu["end"] < TURN_GAP_MS:
+            tu["words"] += len(toks); tu["end"] = r.get("end", r["t"]); tu["lines"] += 1
+            tu["text"] = (tu["text"] + " " + r["text"])[:600]
+        else:
+            if tu and (not longest or tu["words"] > longest["words"]):
+                longest = dict(tu)
+            turn_by_ch[chk] = tu = {"who": who(r), "name": r.get("speaker"), "words": len(toks), "t": r["t"], "end": r.get("end", r["t"]), "lines": 1,
+                                    "text": r["text"], "call": call and call["id"], "ch": chk}
+            p["turns"] += 1
+    for tu in turn_by_ch.values():
+        if not longest or tu["words"] > longest["words"]:
+            longest = dict(tu)
+
+    # questions: the answer finder's verdicts (real question? which line answered it?)
+    q_total = q_answered = 0
+    waits = []
+    for r, _ in recs_all:
+        v = qa.get(r.get("id") or "")
+        if not v or not v.get("real"):
+            continue
+        p = P.get(who(r))
+        if p is None:                              # a line left out above (the transcriber looping)
+            continue
+        p["asked"] += 1; q_total += 1
+        a = by_id.get(v.get("answer"))
+        if a:
+            q_answered += 1; p["askedAnswered"] += 1
+            if who(a) in P:
+                P[who(a)]["answered"] += 1
+            waits.append(max(0, a["t"] - r.get("end", r["t"])) / 1000)
+    waits.sort()
+
+    ranked = sorted(P.values(), key=lambda p: -p["lines"])
+    tot_secs = sum(p["secs"] for p in ranked) or 1
+    people_out = []
+    for p in ranked[:40]:
+        if p["lines"] < 30:
+            continue
+        rest = {w: words_all[w] - p["counts"].get(w, 0) for w in p["counts"]}
+        rest_full = dict(words_all); rest_full.update(rest)
+        sig = _log_odds(p["counts"], rest_full, words_all)
+        own = [(g, n) for g, n in p["grams"].items() if n >= 4 and n >= 0.5 * grams_all[g]]
+        own.sort(key=lambda t: -t[1])
+        top_reply = max(p["replyTo"].items(), key=lambda kv: kv[1]) if p["replyTo"] else None
+        people_out.append({"id": p["id"], "name": p["name"], "lines": p["lines"], "words": p["words"], "secs": round(p["secs"]),
+                           "share": round(100 * p["secs"] / tot_secs, 1), "wpl": round(p["words"] / p["lines"], 1),
+                           "wordsPerTurn": round(p["words"] / max(1, p["turns"]), 1),
+                           "qRate": round(100 * p["q"] / p["lines"], 1), "swearRate": round(100 * p["swears"] / p["lines"], 1),
+                           "selfShare": round(100 * p["self"] / (p["self"] + p["group"]), 0) if p["self"] + p["group"] >= 20 else None,
+                           "variety": _mattr(p["tok"]), "peakHour": max(range(24), key=lambda h: p["hours"][h]), "hours": p["hours"],
+                           "over": p["over"], "overRate": round(100 * p["over"] / p["lines"], 1), "overBy": p["overBy"],
+                           "asked": p["asked"], "askedAnswered": p["askedAnswered"], "answered": p["answered"], "calls": len(p["calls"]),
+                           "signature": sig, "phrases": [{"g": g, "n": n} for g, n in own[:5]],
+                           "topReply": top_reply and {"id": top_reply[0], "name": P[top_reply[0]]["name"], "n": top_reply[1]}})
+
+    def top_counts(d, n, ok=lambda w: True):
+        return [{"w": w, "n": c} for w, c in sorted(d.items(), key=lambda kv: -kv[1]) if ok(w)][:n]
+    content = lambda w: w not in STOPWORDS and len(w) > 2 and not w.isdigit()
+    rising = []
+    if split_t is not None and early_words and recent_words:
+        R, E = sum(recent_words.values()) or 1, sum(early_words.values()) or 1
+        for w, x in recent_words.items():
+            if x < 12 or not content(w):
+                continue
+            y = early_words.get(w, 0)
+            ratio = (x / R) / ((y + 1) / E)
+            if ratio >= 3:
+                rising.append({"w": w, "now": x, "before": y, "x": round(ratio, 1)})
+        rising.sort(key=lambda t: -t["x"] * math.log(t["now"]))
+    pair_out = []
+    seen = set()
+    for (a, b), n in sorted(pairs.items(), key=lambda kv: -(kv[1] + pairs.get((kv[0][1], kv[0][0]), 0))):
+        if (b, a) in seen or a not in P or b not in P:
+            continue
+        seen.add((a, b))
+        pair_out.append({"a": a, "aName": P[a]["name"], "b": b, "bName": P[b]["name"], "ab": n, "ba": pairs.get((b, a), 0)})
+        if len(pair_out) >= 15:
+            break
+    chan_out = sorted(({"key": k, "name": c["name"], "server": c["server"], "lines": c["lines"], "words": c["words"], "calls": len(c["calls"]),
+                        "people": len(c["people"]), "peakHour": max(range(24), key=lambda h: c["hours"][h]),
+                        "top": [{"id": w, "name": P[w]["name"], "share": round(100 * n / c["lines"])} for w, n in sorted(c["people"].items(), key=lambda kv: -kv[1])[:3]]}
+                       for k, c in chans.items()), key=lambda c: -c["lines"])
+    busiest = max(minute.items(), key=lambda kv: kv[1]) if minute else None
+    vocab = sum(1 for w, c in words_all.items() if not w.isdigit())
+    out = {
+        "period": period, "srv": srv, "servers": [{"key": k, "name": v} for k, v in sorted(servers.items(), key=lambda kv: kv[1].lower())],
+        "from": first_t, "to": last_t, "split": split_t,
+        "totals": {"lines": sum(p["lines"] for p in P.values()), "words": sum(words_all.values()), "people": len(P), "calls": len(call_ids), "channels": len(chans),
+                   "hours": round(tot_secs / 3600, 1), "vocab": vocab, "swears": sum(p["swears"] for p in P.values()),
+                   "questions": q_total, "answered": q_answered, "waitMedian": waits[len(waits) // 2] if waits else None},
+        "hours": hours, "heat": [{"day": d, "h": v} for d, v in sorted(heat.items())],
+        "days": [{"day": d, "lines": v["lines"], "words": v["words"], "people": len(v["people"])} for d, v in sorted(per_day.items())],
+        "words": top_counts(words_all, 60, content),
+        "phrases": top_counts({g: n for g, n in grams_all.items() if len(g.split()) == 2}, 30, lambda g: grams_all[g] >= 5),
+        "phrases3": top_counts({g: n for g, n in grams_all.items() if len(g.split()) == 3}, 30, lambda g: grams_all[g] >= 4),
+        "swearWords": top_counts({w: c for w, c in words_all.items() if SWEARS.match(w)}, 8),
+        "rising": rising[:20], "people": people_out, "pairs": pair_out, "channels": chan_out[:20],
+        "longest": longest and {k: longest[k] for k in ("who", "name", "words", "t", "end", "lines", "text", "call")},
+        "busiest": busiest and {"t": busiest[0] * 60000, "lines": busiest[1]},
+    }
+    _insights_cache["k"] = (stamp, time.time(), out)
+    return out
+
+
+STATUS_LOG_MAX = 50 * 1024 * 1024     # status.log is moved to status.log.1 past this
+STATUS_LOG_EVERY = 60                 # an unchanged status is written at most this often (seconds) per account
+STATUS_LOG_SKIP = {"lobby", "names", "nameVia", "accounts", "unnamedRows"}   # big and repeated every 5 s: kept in memory, not on disk
+
+
+def log_status(conn: dict, s: dict, paused) -> None:
+    """Append a hook status to status.log (diagnostics only; nothing reads it back). Only what changed,
+    or once a minute, without the name maps, and rotated, so it stays a few MB instead of GBs a day."""
+    rec = {k: v for k, v in s.items() if k not in STATUS_LOG_SKIP}
+    rec["paused"] = paused
+    if isinstance(s.get("names"), dict):
+        rec["nNames"] = len(s["names"])
+    lob = s.get("lobby")
+    if isinstance(lob, dict):
+        g = lob.get("guilds")
+        rec["lobby"] = {"guilds": len(g) if isinstance(g, (list, dict)) else g, "ms": lob.get("ms"), "dropped": lob.get("dropped"), "capped": lob.get("capped")}
+    sig = json.dumps({k: v for k, v in rec.items() if k not in ("t", "ms", "frames", "chunks", "audioSec", "silent", "heardAgo", "loudMax", "dupDropped", "lobby")}, sort_keys=True, default=str)
+    now = time.time()
+    if sig == conn.get("logSig") and now - conn.get("logAt", 0) < STATUS_LOG_EVERY:
+        return
+    conn["logSig"], conn["logAt"] = sig, now
+    path = TRANSCRIPTS.parent / "status.log"
+    try:                                      # rotating can fail on Windows while something has the file open: log anyway
+        if path.exists() and path.stat().st_size > STATUS_LOG_MAX:
+            os.replace(path, path.with_name("status.log.1"))
+    except OSError:
+        pass
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"), **rec}, default=str) + "\n")
+    except OSError as e:
+        print("status.log:", e, flush=True)
+
+
 def number_excerpt(text: str) -> tuple[str, int]:
     """'>> text' -> '>> [1] text', counting up; returns (text, numbered lines)."""
     n, out = 0, []
@@ -4353,6 +4662,9 @@ async def main():
             return respond(persona_book.view(uid))
         if path == "/api/study":
             return respond(study_data(hub, persona_book))
+        if path == "/api/insights":
+            per = params.get("period", "all")
+            return respond(await asyncio.to_thread(insights, hub, __import__("urllib.parse").parse.unquote_plus(params.get("srv", ""))[:80], per if per in ("all", "7d", "24h") else "all"))
         if path == "/api/study/test":
             if request.headers.get("X-CT") != "1":
                 return respond({"error": "forbidden"}, status=403)
@@ -4538,12 +4850,7 @@ async def main():
                         presence_feed(hub, ws, time.time())
                     except Exception as e:
                         print("presence:", e, flush=True)
-                    lob = ev["s"].get("lobby")
-                    with (TRANSCRIPTS.parent / "status.log").open("a", encoding="utf-8") as f:
-                        f.write(json.dumps({"t": dt.datetime.now().isoformat(timespec="seconds"),
-                                            **{k: v for k, v in ev["s"].items() if k != "lobby"}, "paused": ev.get("paused"),
-                                            **({"lobby": {"guilds": len(lob.get("guilds") or []), "ms": lob.get("ms"),
-                                                           "dropped": lob.get("dropped"), "capped": lob.get("capped")}} if isinstance(lob, dict) else {})}) + "\n")
+                    log_status(conn, ev["s"], ev.get("paused"))
                 if time.time() - last_status > 30:
                     last_status = time.time()
                     live = [p.label for p in people.values() if time.time() - p.last_seen < 30]
