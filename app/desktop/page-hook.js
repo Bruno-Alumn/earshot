@@ -179,7 +179,8 @@
         let vocal = [];
         try { vocal = (st.guildChannels?.getChannels?.(g.id)?.VOCAL || []).map((x) => x.channel || x); } catch {}
         if (!vocal.length) { try { vocal = Object.values(st.channels?.getMutableGuildChannelsForGuild?.(g.id) || {}); } catch {} }
-        const channels = vocal.filter((c) => c && (c.type === 2 || c.type === 13)).map((c) => ({ id: c.id, name: clean(c.name) || 'Voice' }));
+        const afk = g.afkChannelId || g.afk_channel_id || null;          // the server's AFK room is never a call
+        const channels = vocal.filter((c) => c && (c.type === 2 || c.type === 13) && c.id !== afk).map((c) => ({ id: c.id, name: clean(c.name) || 'Voice' }));
         return { id: g.id, name: clean(g.name) || 'Server', channels };
       }).filter((g) => g.channels.length).slice(0, 200);
     } catch { return null; }
@@ -292,6 +293,8 @@
         const seen = vocal?.size ? vocal.has(cid) || (ch?.type === 13 && !!ch?.name) : !!ch?.name;
         if (!seen && ch?.name && (ch.type === 2 || ch.type === 13)) dropped++;
         if (!seen || (ch && ch.type !== 2 && ch.type !== 13)) continue;     // a channel this account can't see
+        let afkId = null; try { const gg = st.guilds?.getGuild?.(gid); afkId = gg?.afkChannelId || gg?.afk_channel_id || null; } catch {}
+        if (afkId && cid === afkId) continue;                                  // the AFK room is never a call
         if (channels.length >= 60 || total >= 2000) { capped = gCapped = true; break; }
         const l = ch?.userLimit ?? ch?.user_limit;
         const room = Math.min(99, 2000 - total);

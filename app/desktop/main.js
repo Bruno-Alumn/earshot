@@ -14,7 +14,7 @@ const path = require('path');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
 const webshare = require('./webshare');
-const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf } = require('./autojoin');
+const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf, flagFor, withLobby } = require('./autojoin');
 
 // Auto-join: a free account hops into an open, flagged voice channel and moves
 // on after a stretch of silence. Timings are overridable for the test harness.
@@ -220,6 +220,8 @@ function saveChannelFlags() {
 }
 function setChannelFlag(id, key, on) {
   if (key !== 'auto' && key !== 'fav') return channelFlags;
+  if (id.startsWith('guild:') && key !== 'auto') return channelFlags;   // a whole server: auto-join only
+  if (!/^(guild:)?\d{15,22}$/.test(id)) return channelFlags;
   const f = channelFlags[id] || { auto: false, fav: false };
   f[key] = !!on;
   if (!f.auto && !f.fav) delete channelFlags[id]; else channelFlags[id] = f;
@@ -938,9 +940,12 @@ function clearJoinHint(a) {
 // Tell an account's page which channels to report occupancy for (the flagged
 // ones in its own servers), so the controller can see which are open and full.
 function flaggedChannelIds(a) {
-  const ids = [];
-  for (const g of a.directory || []) for (const c of g.channels || []) if (channelFlags[c.id]?.auto) ids.push(c.id);
-  return ids;
+  const own = [], viaServer = [];               // channels flagged one by one first: the page watches at most 50
+  for (const g of a.directory || []) for (const c of g.channels || []) {
+    const f = flagFor(channelFlags, g.id, c);
+    if (f?.auto) (f.viaServer ? viaServer : own).push(c.id);
+  }
+  return [...own, ...viaServer].slice(0, 150);
 }
 function sendWatchList(a, connected = null) {      // plus the channel it sits in, to tell when it is left alone
   const ids = flaggedChannelIds(a);
@@ -992,7 +997,7 @@ function autoJoinTick() {
   const ownCount = new Map();                     // channel id -> how many of your accounts are in it
   for (const a of accounts) {
     const r = rt.get(a.id);
-    if (!r?.status || now - (r.statusAt || 0) > 15000) continue;
+    if (!r?.status || !r.status.me || now - (r.statusAt || 0) > 15000) continue;   // a signed-out page holds no channel
     const ch = connectedChannelId(r.status);
     if (ch) { connectedNow.set(ch, a.id); ownCount.set(ch, (ownCount.get(ch) || 0) + 1); }
   }
@@ -1001,6 +1006,7 @@ function autoJoinTick() {
     if (!w || !r || !r.wsOpen || r.capturing === false || r.hint) continue;
     if (now - (r.statusAt || 0) > 15000 || !r.status) continue;
     const status = r.status;
+    if (!status.me) continue;                     // signed out of Discord: it can't join anything (Accounts shows it)
     const connected = connectedChannelId(status);
     sendWatchList(a, connected || r.lastIn?.channelId || null);                  // keep the page's watch list current across reloads
     r.cooldowns = r.cooldowns || {};
@@ -1021,35 +1027,43 @@ function autoJoinTick() {
       if (why === 'removed') {
         const g = guildOf(a.directory || [], back.channelId);
         const gid = back.guildId || g?.guildId;
-        if (gid) r.autoStop[gid] = { guildId: gid, guildName: g?.guildName || '', channelName: g?.name || '', at: now };
-        console.log(`auto-join: ${nameOf(a)} left voice in ${g?.guildName || gid} without the app moving it; stopped there`);
+        const gName = g?.guildName || (a.directory || []).find((x) => x.id === gid)?.name || '';
+        r.cooldowns[back.channelId] = now + AUTOJOIN_COOLDOWN;   // never straight back into the channel it was taken out of
+        if (gid) r.autoStop[gid] = { guildId: gid, guildName: gName, channelName: g?.name || '', at: now };
+        console.log(`auto-join: ${nameOf(a)} left voice in ${gName || gid} without the app moving it; stopped there`);
         broadcast();
       } else {
         const o = occOf(status)[back.channelId];
         const held = connectedNow.has(back.channelId) && connectedNow.get(back.channelId) !== a.id;
         const open = !o || (o.count >= AUTOJOIN_MIN && !(o.limit > 0 && o.count >= o.limit));
-        if (!held && open && !((r.cooldowns[back.channelId] || 0) > now)) {
-          const g = guildOf(a.directory || [], back.channelId);
+        const g = guildOf(a.directory || [], back.channelId), gid = back.guildId || g?.guildId;
+        if (gid && !held && open && !((r.cooldowns[back.channelId] || 0) > now)) {
           console.log(`auto-join: ${nameOf(a)} dropped out of ${g?.name || back.channelId} when its page reloaded; going back`);
-          autoJoinChannel(a, { guildId: back.guildId || g?.guildId, channelId: back.channelId, name: g?.name || '' });
+          autoJoinChannel(a, { guildId: gid, channelId: back.channelId, name: g?.name || '' });
           connectedNow.set(back.channelId, a.id);
           continue;
         }
       }
     }
     if (connected !== r.inCh) { r.inCh = connected; r.inSince = now; }   // when it got to this channel, however it got there
+    // The page's own occupancy, plus what its voice lobby shows (channels made since
+    // the directory was read, in servers flagged as a whole).
+    const live = withLobby({ directory: a.directory || [], lobby: status.lobby, flags: channelFlags, occ: occOf(status), selfId: status.me?.id || null });
     if (connected) {
-      const g = guildOf(a.directory || [], connected);
+      // Which server it is in: from the directory (or the lobby, for a channel made since
+      // it was read), else the page's own report. A kick needs this to stop in the right server.
+      const g = guildOf(live.directory, connected);
+      const gid = g?.guildId || (status.channel?.id === connected ? status.channel.guild : null) || (r.lastIn?.channelId === connected ? r.lastIn.guildId : null) || null;
       // at = when the page last said so (not now): a status sent before a reload must
       // not make the reload look older than the last sighting.
-      r.lastIn = { channelId: connected, guildId: g?.guildId || r.lastIn?.guildId || null, at: r.statusAt || now };
+      r.lastIn = { channelId: connected, guildId: gid, at: r.statusAt || now };
     }
-    const occ = occOf(status);
+    const occ = live.occ;
     // How long this account has been alone where it is (restarts when it changes channel).
     const alone = isAlone({ occ, channelId: connected, ownHere: Math.max(0, (ownCount.get(connected) || 0) - 1), minPeople: AUTOJOIN_MIN });
     if (!alone || r.aloneIn !== connected) { r.aloneIn = alone ? connected : null; r.aloneSince = alone ? now : 0; }
     const ownChannels = new Set([...connectedNow.keys()].filter((ch) => connectedNow.get(ch) !== a.id));
-    const cands = candidates({ directory: (a.directory || []).filter((g) => !r.autoStop[g.id]), flags: channelFlags, occ,
+    const cands = candidates({ directory: live.directory.filter((g) => !r.autoStop[g.id]), flags: channelFlags, occ,
       ownChannels, cooldowns: r.cooldowns, currentChannelId: connected, now, minPeople: AUTOJOIN_MIN });
     if (connected) {
       if (alone && cands.length && now - r.aloneSince >= AUTOJOIN_ALONE * 1000) {
@@ -1064,12 +1078,16 @@ function autoJoinTick() {
           && isIdle({ status, joinedAt: Math.max(r.autoJoinAt || 0, r.inSince || 0), now, idleSec: AUTOJOIN_IDLE })) {
         r.cooldowns[connected] = now + AUTOJOIN_COOLDOWN;   // don't bounce straight back to the quiet one
         r.autoJoined = null;
-        autoJoinChannel(a, cands[0]);
-        connectedNow.delete(connected); connectedNow.set(cands[0].channelId, a.id);
+        const to = busiestFirst(cands)[0];
+        console.log(`auto-join: ${nameOf(a)} heard nobody in ${connected} for ${AUTOJOIN_IDLE} s, moving to ${to.name || to.channelId}`);
+        autoJoinChannel(a, to);
+        connectedNow.delete(connected); connectedNow.set(to.channelId, a.id);
       }
     } else if (cands.length) {
-      autoJoinChannel(a, cands[0]);
-      connectedNow.set(cands[0].channelId, a.id);
+      const to = busiestFirst(cands)[0];             // the most people (favourites first)
+      console.log(`auto-join: ${nameOf(a)} joining ${to.name || to.channelId} (${to.count} people)`);
+      autoJoinChannel(a, to);
+      connectedNow.set(to.channelId, a.id);
     }
   }
 }

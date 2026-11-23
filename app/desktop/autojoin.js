@@ -4,17 +4,34 @@
 // and asks these functions what to do.
 'use strict';
 
-// The voice channels an account could auto-join right now, best first.
+// A whole server can be flagged too: "guild:<server id>" in the flags. That covers
+// every voice channel in it, including ones made after you flagged it. Some servers
+// (a "Join to Create" bot) delete a voice channel when it empties and make a new one
+// with a new id, so a flag on the old channel stops matching anything.
+const guildKey = (guildId) => 'guild:' + guildId;
+// Channels a server-wide flag skips: lobby channels that make a new channel for
+// whoever joins (joining one would create a channel, not join a call) and AFK rooms.
+const NOT_A_CALL = /join.{0,3}to.{0,3}create|create.{0,8}(channel|vc|voice|room)|\bafk\b/i;
+// The flag that applies to a channel: its own, else its server's (fav only ever comes from the channel).
+function flagFor(flags = {}, guildId, channel = {}) {
+  const f = flags[channel.id];
+  if (f && f.auto) return f;
+  const gf = flags[guildKey(guildId)];
+  if (gf && gf.auto && !NOT_A_CALL.test(channel.name || '')) return { auto: true, fav: !!(f && f.fav), viaServer: true };
+  return f || null;
+}
+
+// The voice channels an account could auto-join right now.
 // A channel qualifies when ALL of these hold:
-//   - it is flagged for auto-join (the blue icon),
+//   - it is flagged for auto-join (the blue icon), itself or through its server,
 //   - it is one of the account's own servers' voice channels,
 //   - at least minPeople real people are in it (main.js asks for 2) — people, not your own accounts,
 //   - it is not full (its user limit still has a free slot for us),
 //   - no other of your accounts is already connected to it (don't pile in),
 //   - it is not on cool-down (a join that just failed or a channel we just left),
 //   - it is not the channel this account is already sitting in.
-// Favourites (the yellow star) come first, then by name — so the list, and the
-// order the controller tries channels in, both put favourites up top.
+// Sorted favourites first, then by name (a stable list). The controller picks from
+// it with busiestFirst: favourites first, then the channel with the most people.
 function candidates({ directory = [], flags = {}, occ = {}, ownChannels = new Set(),
                       cooldowns = {}, currentChannelId = null, now = 0, minPeople = 1 } = {}) {
   const out = [];
@@ -23,7 +40,7 @@ function candidates({ directory = [], flags = {}, occ = {}, ownChannels = new Se
     for (const c of (g.channels || [])) {
       if (seen.has(c.id)) continue;
       seen.add(c.id);
-      const f = flags[c.id];
+      const f = flagFor(flags, g.id, c);
       if (!f || !f.auto) continue;                        // not marked for auto-join
       if (currentChannelId && c.id === currentChannelId) continue;  // already here
       if (ownChannels.has(c.id)) continue;                // another of your accounts holds it
@@ -95,4 +112,34 @@ function guildOf(directory = [], channelId) {
   return null;
 }
 
-module.exports = { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf };
+// Fill in what an account's directory and watch list miss, from its page's voice lobby
+// (every voice channel with people in it, refreshed every 15 seconds):
+//   - channels of a server-wide flagged server that the directory doesn't list yet (a
+//     channel made since the directory was last read, which happens every 10 minutes),
+//   - occupancy for channels the page wasn't asked about yet.
+// Counts leave out this account itself (selfId), like the page's own occupancy does.
+// Only servers already in the directory are used: those are the account's own servers.
+function withLobby({ directory = [], lobby = null, flags = {}, occ = {}, selfId = null } = {}) {
+  const lg = new Map(((lobby && lobby.guilds) || []).filter((g) => g && g.id).map((g) => [String(g.id), g]));
+  if (!lg.size) return { directory, occ };
+  const outOcc = { ...occ };
+  const outDir = directory.map((g) => {
+    const live = lg.get(g.id);
+    if (!live) return g;
+    const known = new Set((g.channels || []).map((c) => c.id));
+    const add = [];
+    for (const c of live.channels || []) {
+      if (!c || !c.id) continue;
+      const id = String(c.id);
+      if (!outOcc[id]) {
+        const count = (c.people || []).filter((p) => p && p.id && p.id !== selfId).length;
+        outOcc[id] = { count, limit: c.limit | 0 };
+      }
+      if (!known.has(id) && flags[guildKey(g.id)]?.auto) add.push({ id, name: String(c.name || '') });
+    }
+    return add.length ? { ...g, channels: [...(g.channels || []), ...add] } : g;
+  });
+  return { directory: outDir, occ: outOcc };
+}
+
+module.exports = { guildKey, flagFor, withLobby, candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf };

@@ -1,7 +1,7 @@
 // Unit test for the pure auto-join decision logic (app/desktop/autojoin.js).
 //   node test/autojoin-test.js
 const assert = require('assert');
-const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf } = require('../app/desktop/autojoin.js');
+const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf, flagFor, withLobby, guildKey } = require('../app/desktop/autojoin.js');
 
 let failed = false;
 const ok = (name, cond) => { if (cond) console.log('  ok  ' + name); else { console.log('  FAIL ' + name); failed = true; } };
@@ -93,6 +93,32 @@ ok('page reloaded: goes back', classifyLeave({ lastIn: { channelId: 'c1', at: 10
 ok('no reload: removed (kick, disconnect, Leave)', classifyLeave({ lastIn: { channelId: 'c1', at: 2000 }, navAt: 1000 }) === 'removed');
 ok('never in a channel: nothing to do', classifyLeave({ lastIn: null, navAt: 5 }) === null);
 ok('guildOf finds the server', guildOf(directory, 'cHot')?.guildId === 'g1' && guildOf(directory, 'nope') === null);
+
+// 11. A whole server flagged: every voice channel in it, new ones too, but not lobby/AFK rooms.
+const wd = [{ id: 'gW', name: 'War Dogs', channels: [{ id: 'jtc', name: '▫️│ Join to Create' }, { id: 'v1', name: 'Voice 1' }, { id: 'afk', name: 'AFK' }] }];
+const gflags = { [guildKey('gW')]: { auto: true } };
+ok('server flag covers a channel', flagFor(gflags, 'gW', { id: 'v1', name: 'Voice 1' })?.auto === true);
+ok('server flag skips Join to Create', !flagFor(gflags, 'gW', { id: 'jtc', name: '▫️│ Join to Create' })?.auto);
+ok('server flag skips AFK', !flagFor(gflags, 'gW', { id: 'afk', name: 'AFK' })?.auto);
+ok('server flag does not reach other servers', !flagFor(gflags, 'gX', { id: 'v9', name: 'Voice 9' })?.auto);
+ok('own channel flag still wins (fav kept)', flagFor({ ...gflags, v1: { auto: true, fav: true } }, 'gW', { id: 'v1', name: 'Voice 1' })?.fav === true);
+// A channel made after the directory was read shows up through the lobby, with its people counted (not us).
+const lobby = { guilds: [
+  { id: 'gW', name: 'War Dogs', channels: [
+    { id: 'v18', name: 'Voice 18', limit: 0, people: [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'me' }] },
+    { id: 'v1', name: 'Voice 1', limit: 0, people: [{ id: 'd' }, { id: 'e' }] },
+    { id: 'jtc', name: '▫️│ Join to Create', limit: 0, people: [{ id: 'f' }, { id: 'g' }] }] },
+  { id: 'gStranger', name: 'Not mine', channels: [{ id: 's1', name: 'x', limit: 0, people: [{ id: 'h' }, { id: 'i' }] }] }] };
+const L = withLobby({ directory: wd, lobby, flags: gflags, occ: {}, selfId: 'me' });
+ok('lobby adds a new channel to a flagged server', L.directory[0].channels.some((c) => c.id === 'v18'));
+ok('lobby count leaves out this account', L.occ.v18?.count === 3);
+ok('lobby never adds servers the account is not in', !L.directory.some((g) => g.id === 'gStranger'));
+ok('page occupancy wins over lobby', withLobby({ directory: wd, lobby, flags: gflags, occ: { v1: { count: 7, limit: 0 } }, selfId: 'me' }).occ.v1.count === 7);
+ok('no server flag: no channels added', !withLobby({ directory: wd, lobby, flags: {}, occ: {}, selfId: 'me' }).directory[0].channels.some((c) => c.id === 'v18'));
+const wc = candidates({ directory: L.directory, flags: gflags, occ: L.occ, now: 0, minPeople: 2 });
+ok('server flag: Join to Create never a candidate', !wc.some((c) => c.channelId === 'jtc'));
+ok('busiest channel picked first', busiestFirst(wc)[0]?.channelId === 'v18');
+ok('no lobby: directory unchanged', withLobby({ directory: wd, lobby: null, flags: gflags, occ: {}, selfId: 'me' }).directory === wd);
 
 console.log(failed ? '\nFAILED' : '\nPASS');
 process.exit(failed ? 1 : 0);

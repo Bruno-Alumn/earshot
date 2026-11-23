@@ -660,7 +660,13 @@ body.compact #feedmeta { display: none; }
 .acct .ab { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .acct .ab button { flex: none; padding: 3px 8px; font-size: 11.5px; }
 .pop { max-height: calc(100vh - 80px); overflow-y: auto; }
-.tr .tg { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 10px 0 4px; }
+.tr .tg { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 10px 0 4px; display: flex; align-items: center; gap: 6px; }
+.tr .tg > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr .tg .flag { width: auto; height: 26px; padding: 0 8px; gap: 5px; display: inline-flex; font-size: 11.5px; font-weight: 500; color: inherit; }
+.tr .tg .flag:not(.on) { opacity: .75; }
+.tr .tg .flag:not(.on):hover { opacity: .9; }
+.tr .flag.auto.via { color: #3987e5; opacity: .45; }
+.tr .flag.auto.via:hover { opacity: .85; }
 .tr .tc { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text-primary);
   background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 6px 8px; cursor: pointer; }
 .tr .tc:hover { border-color: var(--border); background: var(--surface-2); }
@@ -3743,6 +3749,8 @@ desk?.onCommand?.((c) => { if (c === 'new-account:create') openNewAccount('creat
 // open (you click Join Voice), and set its two flags — blue to let free accounts
 // join it automatically while it is open and not full, yellow to favourite it so
 // it sorts to the top here and is tried first for auto-join.
+// Same rule as app/desktop/autojoin.js: rooms a server-wide flag skips (Join to Create lobbies, AFK).
+const NOT_A_CALL = /join.{0,3}to.{0,3}create|create.{0,8}(channel|vc|voice|room)|\bafk\b/i;
 async function openTranscribe() {
   if (!desk?.accounts) return;
   const info = await desk.accounts();
@@ -3764,14 +3772,15 @@ async function openTranscribe() {
     const ajNote = as ? (as.autoJoin ? 'Auto-join is on in Settings.' : 'Turn Auto-join on in Settings to use the blue flag.') : '';
     box.innerHTML = `<h3 id="modal-h">Channels</h3><div class="psub">${free} of ${(info.accounts || []).length} accounts free · ${esc(ajNote)}</div>
       <input type="search" id="tq" placeholder="Search servers and channels…" value="${esc(q)}" style="width:100%;margin-bottom:8px">
-      <div class="pbody tr">${gs.map((g) => `<div class="tg">${esc(g.name)}</div>${g.channels.map((c) => {
-        const b = busy.get(c.id), f = flags[c.id] || {};
+      <div class="pbody tr">${gs.map((g) => { const gOn = !!flags['guild:' + g.id]?.auto; return `<div class="tg"><span>${esc(g.name)}</span>
+          <button class="flag auto${gOn ? ' on' : ''}" data-c="${esc('guild:' + g.id)}" data-key="auto" aria-pressed="${gOn}" title="${gOn ? `Stop auto-joining every voice channel in ${esc(g.name)}` : `Auto-join any voice channel in ${esc(g.name)} with people in it, including channels made later`}">${BOLT_ICON}${gOn ? 'Stop auto-joining server' : 'Auto-join whole server'}</button></div>${g.channels.map((c) => {
+        const b = busy.get(c.id), f = flags[c.id] || {}, lobbyRoom = NOT_A_CALL.test(c.name || ''), via = gOn && !f.auto && !lobbyRoom;
         return `<div class="tc-row">
           <button class="tc" data-g="${esc(g.id)}" data-c="${esc(c.id)}" title="Open this channel for a free account to join">${CH_ICON}<span>${esc(c.name)}</span>${b ? `<em>${esc(b.label)} is ${b.capturing ? 'transcribing' : 'in'} it</em>` : ''}</button>
-          <button class="flag auto${f.auto ? ' on' : ''}" data-c="${esc(c.id)}" data-key="auto" aria-pressed="${!!f.auto}" title="Auto-join: let a free account join ${esc(c.name)} automatically when it is open and not full" aria-label="Auto-join ${esc(c.name)} when open">${BOLT_ICON}</button>
+          <button class="flag auto${f.auto ? ' on' : ''}${via ? ' via' : ''}" data-c="${esc(c.id)}" data-key="auto" aria-pressed="${!!f.auto}" title="${via ? `Already auto-joined through ${esc(g.name)}. Click to also flag ${esc(c.name)} itself` : gOn && lobbyRoom && !f.auto ? `Skipped by the server-wide setting: joining ${esc(c.name)} makes a new channel or parks you as AFK` : `Auto-join: let a free account join ${esc(c.name)} automatically when it is open and not full`}" aria-label="Auto-join ${esc(c.name)} when open">${BOLT_ICON}</button>
           <button class="flag fav${f.fav ? ' on' : ''}" data-c="${esc(c.id)}" data-key="fav" aria-pressed="${!!f.fav}" title="Favourite: sort ${esc(c.name)} to the top and try it first" aria-label="Favourite ${esc(c.name)}">${STAR_ICON}</button>
         </div>`;
-      }).join('')}`).join('') || `<p>${(info.guilds || []).length ? 'No matches.' : 'No servers yet. Each account lists its servers a few seconds after it signs in.'}</p>`}</div>
+      }).join('')}`; }).join('') || `<p>${(info.guilds || []).length ? 'No matches.' : 'No servers yet. Each account lists its servers a few seconds after it signs in.'}</p>`}</div>
       <div class="pnote" id="tmsg"></div>
       <div class="btns"><button data-a="add">Add account</button><button data-a="close">Close</button></div>`;
     const inp = box.querySelector('#tq'); inp.oninput = () => { const v = inp.value; render(v); const i2 = box.querySelector('#tq'); i2.focus(); i2.setSelectionRange(v.length, v.length); };
