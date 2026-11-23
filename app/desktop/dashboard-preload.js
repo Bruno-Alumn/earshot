@@ -33,4 +33,13 @@ contextBridge.exposeInMainWorld('ctApp', {
   openPluginsFolder: () => ipcRenderer.send('ct:open-plugins'),
   setAppSetting: (key, value) => ipcRenderer.invoke('ct:set-app-setting', String(key), !!value),
   onState: (fn) => ipcRenderer.on('ct:app-state', (_e, s) => fn(s)),
+  // sync with another computer (data only; pairing code typed by hand)
+  sync: () => ipcRenderer.invoke('ct:sync'),
+  syncPairStart: () => ipcRenderer.invoke('ct:sync-pair-start'),
+  syncPairCancel: () => ipcRenderer.invoke('ct:sync-pair-cancel'),
+  syncJoin: (code) => ipcRenderer.invoke('ct:sync-join', String(code || '')),
+  syncNow: () => ipcRenderer.invoke('ct:sync-now'),
+  syncUnpair: (id) => ipcRenderer.invoke('ct:sync-unpair', String(id)),
+  syncRename: (name) => ipcRenderer.invoke('ct:sync-rename', String(name || '')),
+  onSync: (fn) => ipcRenderer.on('ct:sync-changed', (_e, v) => fn(v)),
 });

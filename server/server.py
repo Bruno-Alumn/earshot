@@ -28,6 +28,8 @@ from collections import deque
 from pathlib import Path
 
 import numpy as np
+
+import sync
 import websockets
 from websockets.datastructures import Headers
 from websockets.http11 import Response
@@ -262,6 +264,11 @@ class Segmenter:
 
 
 # ---------------------------------------------------------------- output
+# Held for every write to a .jsonl transcript (append or rewrite), so sync and
+# deletes never lose a line being written at the same moment.
+JSONL_LOCK = threading.RLock()
+
+
 class Writer:
     """Appends each line to the readable .md transcript and to a .jsonl data
     file (used by the dashboard's analytics), then pushes it to the dashboard."""
@@ -283,6 +290,11 @@ class Writer:
         when = dt.datetime.fromtimestamp(t_ms / 1000)
         md, jl = self._paths(when)
         rec = {"id": os.urandom(5).hex(), "t": int(t_ms), "end": int(t_ms + dur_s * 1000), "user": uid, "speaker": speaker, "text": text}
+        if SYNC_RECENT and uid:
+            with JSONL_LOCK:
+                got = sync_recent_dup(rec)
+                if got:                  # the other computer sent this speech already: keep its copy
+                    return {**got, "_dup": True}
         un = self.hub.username_of(uid)
         if un:
             rec["username"] = un         # their Discord username: the same whatever name they show
@@ -295,7 +307,7 @@ class Writer:
         self.flush_md()
         if ch and ch.get("id"):
             rec.update({"ch": ch["id"], "chName": ch.get("name"), "guild": ch.get("guild"), "guildName": ch.get("guildName")})
-        with jl.open("a", encoding="utf-8") as f:
+        with JSONL_LOCK, jl.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[{when:%H:%M:%S}] {speaker}: {text}", flush=True)
         self.hub.publish({"type": "line", **rec})
@@ -325,11 +337,11 @@ class Writer:
         # midnight), then each new line in its own day's file.
         for d in sorted(days):
             _, jl = self._paths(dt.datetime.strptime(d, "%Y-%m-%d"))
-            with jl.open("a", encoding="utf-8") as f:
+            with JSONL_LOCK, jl.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"tomb": True, "t": int(min(r["t"] for r in old)), "replaces": ids}) + "\n")
         for rec in new:
             _, jl = self._paths(dt.datetime.fromtimestamp(rec["t"] / 1000))
-            with jl.open("a", encoding="utf-8") as f:
+            with JSONL_LOCK, jl.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         with self.lock:
             if all(any(x[6] == i for x in self.pending) for i in ids):      # not in the .md yet: swap them
@@ -396,8 +408,12 @@ def load_day(day: str) -> list[dict]:
                 recs.append(json.loads(line))
             except ValueError:
                 pass
-    first = min((r["t"] for r in recs), default=float("inf"))
-    if md.exists():
+    synced_text: dict = {}
+    for r in recs:
+        if r.get("via") and r.get("text"):
+            synced_text.setdefault(sync.norm_text(r["text"]), []).append(r["t"])
+    first = min((r["t"] for r in recs if not r.get("via")), default=float("inf"))   # lines synced in don't count:
+    if md.exists():                                                                    # the .md holds only this machine's
         base = dt.datetime.strptime(day, "%Y-%m-%d")
         for line in md.read_text(encoding="utf-8").splitlines():
             m = MD_LINE.match(line)
@@ -407,6 +423,8 @@ def load_day(day: str) -> list[dict]:
             t = int((base.replace(hour=int(h), minute=int(mi), second=int(se))).timestamp() * 1000)
             if t >= first - 1000:
                 continue
+            if synced_text and any(abs(x - t) <= 2500 for x in synced_text.get(sync.norm_text(text), ())):
+                continue                                  # the other computer sent this same speech
             words = max(1, len(text.split()))
             recs.append({"t": t, "end": t + int(words / 2.6 * 1000), "user": "", "speaker": who, "text": text})
     # Lines written before the lead-in fix could start minutes early (a scrap of old
@@ -626,16 +644,34 @@ def archived_keys() -> set[str]:
 def set_archived(key: str, on: bool):
     keys = archived_keys()
     (keys.add if on else keys.discard)(key)
-    archive_path().write_text(json.dumps({"keys": sorted(keys)}, indent=1), encoding="utf-8")
+    save_archived(keys)
+
+
+def save_archived(keys: set):
+    tmp = archive_path().with_suffix(".json.tmp")
+    tmp.write_text(json.dumps({"keys": sorted(keys)}, indent=1), encoding="utf-8")
+    tmp.replace(archive_path())
 
 
 def delete_group(kind: str, key: str) -> dict:
     """Remove every line of a call / channel / server from the transcripts.
-    Removed lines go to transcripts/.trash/ (recoverable), not into the void."""
+    Removed lines go to transcripts/.trash/ (recoverable), not into the void.
+    The deletion is logged for sync, so the other machine deletes them too."""
+    with JSONL_LOCK:
+        out = _delete_group(kind, key)
+        info = out.pop("_sync", None)
+        if info and (info["keys"] or info["ranges"]):
+            sync_log_deletion(kind, key, info["ranges"], info["keys"], info["touched"])
+    return out
+
+
+def _delete_group(kind: str, key: str) -> dict:
     trash = TRANSCRIPTS / ".trash"
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     n_lines = n_calls = 0
     touched: dict[str, int] = {}          # who lost lines -> earliest lost line (their reads since then used it)
+    del_ranges: list = []                 # for sync: the stretches cut, and the lines that went
+    del_keys: list = []
     parts = merged_id_of()
     for d in all_days():
         _, calls = day_data(d)
@@ -644,6 +680,7 @@ def delete_group(kind: str, key: str) -> dict:
             continue
         n_calls += len(targets)
         ranges = [(c["start"], c["end"], c["ch"]) for c in targets]
+        del_ranges.extend([c["start"], c["end"], c["ch"]] for c in targets)
         def hit(t, ch, slack=0):
             return any(s0 - slack <= t <= e0 + slack and (not ch or not cc or ch == cc) for s0, e0, cc in ranges)
         trash.mkdir(parents=True, exist_ok=True)
@@ -657,6 +694,7 @@ def delete_group(kind: str, key: str) -> dict:
                     keep.append(line); continue
                 if hit(r["t"], r.get("ch")):
                     gone.append(line)
+                    del_keys.append(sync.rec_key(r))
                     if r.get("user"):
                         touched[r["user"]] = min(touched.get(r["user"], r["t"]), r["t"])
                 else:
@@ -693,7 +731,7 @@ def delete_group(kind: str, key: str) -> dict:
     prune_merges()
     if PERSONA_BOOK and touched:
         PERSONA_BOOK.forget(touched)
-    return {"calls": n_calls, "lines": n_lines}
+    return {"calls": n_calls, "lines": n_lines, "_sync": {"ranges": del_ranges, "keys": del_keys, "touched": touched}}
 
 
 def parse_parts(raw: str) -> list | None:
@@ -865,7 +903,46 @@ class Presence:
         self.own_seen: set = set()               # every id that was one of your accounts (kept out of "in voice with")
         self.lines = 0                           # lines in presence.jsonl (more than stints: compact it)
         self._open_dirty = False
+        self.peers: dict[str, list] = {}         # the other machine's own stints (sync), kept apart from ours
         self._load()
+        self._load_peers()
+
+    def _peer_file(self, peer: str) -> Path:
+        return TRANSCRIPTS.parent / "sync" / f"presence-{re.sub(r'[^a-z0-9]', '', peer.lower())[:24] or 'peer'}.jsonl"
+
+    def _load_peers(self):
+        d = TRANSCRIPTS.parent / "sync"
+        for f in d.glob("presence-*.jsonl") if d.exists() else []:
+            recs = []
+            for line in f.read_text(encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if presence_ok(r):
+                    recs.append(r)
+            self.peers[f.stem[len("presence-"):]] = recs
+
+    def set_peer(self, peer: str, recs: list[dict]):
+        """The other machine's voice history: stored apart, so pruning or resuming here never touches it."""
+        cutoff = int(time.time() * 1000) - PRESENCE_KEEP_DAYS * 86400000
+        recs = [r for r in recs if r["e"] >= cutoff]
+        f = self._peer_file(peer)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        key = f.stem[len("presence-"):]
+        with self.lock:
+            if self.peers.get(key) == recs:
+                return False
+        tmp = f.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs), encoding="utf-8")
+        tmp.replace(f)
+        with self.lock:
+            self.peers[key] = recs
+            self.own_seen |= {r["u"] for r in recs if r.get("own")}
+        return True
+
+    def _peer_stints(self) -> list[dict]:
+        return [r for lst in self.peers.values() for r in lst]
 
     # ---- storage
     def _load(self):
@@ -1092,7 +1169,8 @@ class Presence:
         Runs in the background thread; requests only read the result."""
         with self.lock:                          # plain tuples: stints can change (a resume) while this runs
             own = set(self.own_seen)
-            stints = [(r["u"], r["c"], r["s"], r["e"], bool(r.get("own"))) for r in self.closed]
+            both = sync.presence_union(self.closed, self._peer_stints()) if self.peers else self.closed
+            stints = [(r["u"], r["c"], r["s"], r["e"], bool(r.get("own"))) for r in both]
             stints += [(r["u"], r["c"], r["s"], max(r["e"], min(now_ms, r["e"] + PRESENCE_STALE_MS)), bool(r.get("own")))
                        for r in self.open.values()]
         totals: dict[str, list] = {}
@@ -1124,7 +1202,9 @@ class Presence:
 
     def stints_of(self, uid: str) -> list[dict]:
         with self.lock:
-            out = [dict(r) for r in self.by_user.get(uid, [])]
+            mine = self.by_user.get(uid, [])
+            peer = [r for r in self._peer_stints() if r["u"] == uid] if self.peers else []
+            out = [dict(r) for r in (sync.presence_union(mine, peer) if peer else mine)]
             if uid in self.open:
                 out.append({**self.open[uid], "open": True})
         return out
@@ -1513,8 +1593,13 @@ class Hub:
         if not name or re.fullmatch(r"user-\d{4}", name) or self.names.get(uid) == name:
             return
         self.names[uid] = name
+        self.save_names()
+
+    def save_names(self):
         try:
-            self.names_file.write_text(json.dumps(self.names, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp = self.names_file.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self.names, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self.names_file)
         except OSError:
             pass
 
@@ -2771,9 +2856,12 @@ def study_data(hub, book) -> dict:
 def save_test(uid: str, params: dict) -> dict:
     st = load_study()
     tests = st.setdefault("tests", {})
+    cleared = st.setdefault("cleared", {})               # for sync: a clear beats an older entry from the other machine
     if params.get("clear") == "1":
         tests.pop(uid, None)
+        cleared[uid] = int(time.time() * 1000)
     else:
+        cleared.pop(uid, None)
         t = {}
         for k in "OCEAS":
             try:
@@ -3247,6 +3335,22 @@ class PersonaBook:
         p = self._person(uid) or {}
         self.errors[uid] = {"at": time.time(), "msg": msg, "retry": retry, "n": old.get("n", 0) + 1, "lines": p.get("lines", 0)}
 
+    def forget_windows(self, wins: dict):
+        """{uid: [(from ms, until ms)]}: drop reads made inside those spans (a deletion on the other computer)."""
+        with self.lock:
+            changed = False
+            for uid, spans in wins.items():
+                book = self.data.get(uid)
+                if not book:
+                    continue
+                keep = [r for r in book["reads"] if not any(a <= r["at"] <= b for a, b in spans)]
+                if len(keep) != len(book["reads"]):
+                    book["reads"] = keep; changed = True
+                if not keep:
+                    self.data.pop(uid, None)
+            if changed:
+                self._save()
+
     def forget(self, touched: dict):
         """Lines were deleted: drop reads that may have used them ({uid: earliest deleted t})."""
         with self.lock:
@@ -3356,6 +3460,7 @@ class QAJudge:
         self.off_until = 0.0                          # after repeated errors, rest a while
         self.tries: dict[tuple[str, str], int] = {}   # unclear replies per question
         self.wanted: dict[tuple[str, str], float] = {}   # when the dashboard last asked about it
+        self.save_lock = threading.Lock()             # a judgement and a sync merge don't save over each other
         threading.Thread(target=self._worker, daemon=True).start()
 
     def available(self) -> bool:
@@ -3372,6 +3477,10 @@ class QAJudge:
             except Exception:
                 self.res[day] = {}
         return self.res[day]
+
+    def save_day(self, day: str):
+        tmp = self._path(day).with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.res.get(day, {})), encoding="utf-8"); tmp.replace(self._path(day))
 
     def request(self, days: list[str], t0: int, t1: int, ch: str, parts: list | None = None) -> dict:
         """What is known for the questions in this stretch; queues the rest."""
@@ -3483,10 +3592,10 @@ class QAJudge:
                     n = self.tries[(day, qid)] = self.tries.get((day, qid), 0) + 1
                     res = {"real": True, "answer": None} if n >= 2 else None     # twice unclear: call it unanswered
                 if res is not None:
-                    got = self.day_results(day)
-                    got[qid] = res
-                    tmp = self._path(day).with_suffix(".json.tmp")
-                    tmp.write_text(json.dumps(got), encoding="utf-8"); tmp.replace(self._path(day))
+                    with self.save_lock:
+                        got = self.day_results(day)
+                        got[qid] = res
+                        self.save_day(day)
             except Exception as e:
                 self.error = f"{type(e).__name__}: {e}"[:200]
                 self.fails += 1
@@ -4417,7 +4526,7 @@ def transcriber(q: queue.Queue, writer: Writer, hub: Hub, language: str | None, 
         for part, a, b in keep:
             start = to_clock(marks, a)
             written.append(writer.write(start, max(0.3, (to_clock(marks, b) - start) / 1000), uid, who, part, ch, bg))
-        if refine_run and written and not used_2b:     # (2B already wrote it)
+        if refine_run and written and not used_2b and not any(w.get("_dup") for w in written):   # (2B already wrote it; or the other computer did)
             hub.refine_q.append({"t0": t0, "audio": audio, "marks": marks, "lines": written, "queued": time.time()})
         hub.busy_t0 = None
 
@@ -4436,6 +4545,597 @@ def refined_parts(text: str, it: dict) -> list[tuple[float, float, str]]:
 
 
 # ---------------------------------------------------------------- websocket
+# ---------------------------------------------------------------- sync (two installs, e.g. a Mac and a PC)
+# The desktop app moves data between the machines (app/desktop/sync.js); the merge
+# rules are in sync.py. Here: what this machine has (manifest, keys, records,
+# snapshot), and taking in what the other machine sent (import), with every cache
+# that depends on it put right.
+QA_JUDGE = None
+HUB = None
+
+
+def sync_dir() -> Path:
+    d = TRANSCRIPTS.parent / "sync"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _read_json(path: Path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except Exception:
+        return None                                   # unreadable right now (mid-write): skip, never treat as empty
+
+
+def _write_json(path: Path, obj, indent=None):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=indent), encoding="utf-8")
+    tmp.replace(path)
+
+
+def sync_deletions() -> list[dict]:
+    out = []
+    f = sync_dir() / "deleted.jsonl"
+    if f.exists():
+        for line in f.read_text(encoding="utf-8").splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, dict) and e.get("id"):
+                out.append(e)
+    return out
+
+
+def sync_log_deletion(kind, key, ranges, keys, touched, at=None):
+    """Log a deletion so the other machine deletes the same lines. Call with JSONL_LOCK held."""
+    at = at or int(time.time() * 1000)
+    e = {"id": os.urandom(6).hex(), "at": at, "kind": kind, "key": key, "ranges": ranges, "keys": keys,
+         "forgets": [[u, int(t), at] for u, t in (touched or {}).items()]}
+    with (sync_dir() / "deleted.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+    _drop_aliases(ranges)
+    return e
+
+
+# Aliases: lines the other machine has that this one holds as its own copy (both
+# heard the same speech), or that were already replaced there when they arrived.
+# day -> {key: [t, channel, the local line's key or None]}. They count as present.
+def _aliases() -> dict:
+    a = _read_json(sync_dir() / "aliases.json", {})
+    if not isinstance(a, dict):
+        return {}
+    return {d: (v if isinstance(v, dict) else {k: [None, None, None] for k in v}) for d, v in a.items() if isinstance(v, (dict, list))}
+
+
+def _drop_aliases(ranges):
+    if not ranges:
+        return
+    al = _aliases()
+    changed = False
+    for d, m in al.items():
+        for k in [k for k, v in m.items() if isinstance(v, list) and v and isinstance(v[0], (int, float))
+                  and sync.in_ranges({"t": v[0], "ch": v[1]}, ranges, slack=sync.DUP_MS)]:
+            m.pop(k); changed = True
+    if changed:
+        _write_json(sync_dir() / "aliases.json", al)
+
+
+def _raw_day(day: str) -> list[dict]:
+    out = []
+    jl = TRANSCRIPTS / f"{day}.jsonl"
+    if jl.exists():
+        for line in jl.read_text(encoding="utf-8").splitlines():
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and isinstance(r.get("t"), (int, float)):
+                out.append(r)
+    return out
+
+
+_sync_keys_cache: dict = {}
+
+
+def sync_day_keys(day: str, aliases: dict | None = None) -> set:
+    jl = TRANSCRIPTS / f"{day}.jsonl"
+    try:
+        st = jl.stat(); stamp = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        stamp = None
+    hit = _sync_keys_cache.get(day)
+    if not hit or hit[0] != stamp:
+        hit = (stamp, {sync.rec_key(r) for r in _raw_day(day)})
+        _sync_keys_cache[day] = hit
+    return hit[1] | set((aliases if aliases is not None else _aliases()).get(day, {}))
+
+
+def jsonl_days() -> list[str]:
+    return sorted(f.stem for f in TRANSCRIPTS.glob("*.jsonl") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", f.stem))
+
+
+def _qa_all() -> dict:
+    out = {}
+    for f in TRANSCRIPTS.glob("*.qa.json"):
+        v = _read_json(f, {})
+        if isinstance(v, dict) and v:
+            out[f.name[:10]] = v
+    return out
+
+
+def _study_sync() -> dict:
+    st = load_study()
+    return {"tests": st.get("tests", {}), "cleared": st.get("cleared", {})}
+
+
+def _presence_own() -> list[dict]:
+    pr = HUB.presence if HUB else None
+    if not pr:
+        return []
+    with pr.lock:
+        return [dict(r) for r in pr.closed]
+
+
+SYNC_PARTS = ["people", "names", "qa", "merges", "archive", "personas", "study", "presence", "deleted"]
+
+
+def sync_parts(names: list[str] | None = None) -> dict:
+    want = set(names or SYNC_PARTS)
+    out = {}
+    if "people" in want and HUB: out["people"] = HUB.people_dir
+    if "names" in want and HUB: out["names"] = HUB.names
+    if "qa" in want: out["qa"] = _qa_all()
+    if "merges" in want: out["merges"] = merge_groups()
+    if "archive" in want: out["archive"] = sorted(archived_keys())
+    if "personas" in want and PERSONA_BOOK:
+        with PERSONA_BOOK.lock:
+            out["personas"] = json.loads(json.dumps(PERSONA_BOOK.data))
+    if "study" in want: out["study"] = _study_sync()
+    if "presence" in want: out["presence"] = _presence_own()
+    if "deleted" in want: out["deleted"] = sync_deletions()
+    return out
+
+
+def sync_snapshot() -> dict:
+    """Copies of the shared data, taken on the event loop (the thread that changes them),
+    so hashing them on another thread never meets a dict that is being changed."""
+    p = sync_parts()
+    p["people"] = {u: dict(v, usernames=list(v.get("usernames") or []), names=list(v.get("names") or []), nicks=list(v.get("nicks") or []))
+                   for u, v in (p.get("people") or {}).items() if isinstance(v, dict)}
+    p["names"] = dict(p.get("names") or {})
+    if HUB and HUB.presence:
+        with HUB.presence.lock:
+            p["_peer"] = HUB.presence._peer_stints()
+    return p
+
+
+def _part_hashes(p: dict) -> dict:
+    """Hashes of what both machines end up sharing, so equal data means equal hashes
+    (a name each machine keeps its own way, or each one's own voice stints, don't count)."""
+    people = {u: {**v, **{k: sorted(v.get(k) or []) for k in ("usernames", "names", "nicks")}} for u, v in (p.get("people") or {}).items() if isinstance(v, dict)}
+    peer = p.get("_peer") or []
+    return {
+        "people": sync.canon_hash(people),
+        "names": sync.canon_hash(sorted(p.get("names") or {})),
+        "qa": sync.canon_hash({d: sorted(v) for d, v in (p.get("qa") or {}).items()}),
+        "merges": sync.canon_hash(sorted(sorted(g) for g in p.get("merges") or [])),
+        "archive": sync.canon_hash(p.get("archive") or []),
+        "personas": sync.canon_hash(p.get("personas") or {}),
+        "study": sync.canon_hash(p.get("study") or {}),
+        "presence": sync.canon_hash([[r["u"], r["c"], r["s"], r["e"]] for r in sync.presence_union(p.get("presence") or [], peer)]),
+        "deleted": sync.canon_hash(sorted(e["id"] for e in p.get("deleted") or [])),
+    }
+
+
+def sync_manifest(snap: dict) -> dict:
+    al = _aliases()
+    days = {d: sync.day_hash(sync_day_keys(d, al)) for d in jsonl_days()}
+    inbox = sync_dir() / "inbox"; inbox.mkdir(exist_ok=True)
+    return {"version": 1, "days": days, "parts": _part_hashes(snap), "inbox": str(inbox)}
+
+
+def sync_records(day: str) -> list:
+    return [[sync.rec_key(r), r] for r in _raw_day(day)]
+
+
+def _md_cut(d: str, stretches: list, trash: Path, stamp: str) -> int:
+    """Take lines inside these (start, end) stretches out of a day's .md transcript."""
+    md = TRANSCRIPTS / f"{d}.md"
+    if not md.exists() or not stretches:
+        return 0
+    base = dt.datetime.strptime(d, "%Y-%m-%d")
+    out, gone, skip_blank = [], [], False
+    for line in md.read_text(encoding="utf-8").splitlines():
+        m = MD_LINE.match(line)
+        if m:
+            h, mi, se = (int(x) for x in m.groups()[:3])
+            t = int(base.replace(hour=h, minute=mi, second=se).timestamp() * 1000)
+            if any(s0 - 1000 <= t <= e0 + 1000 for s0, e0 in stretches):     # .md has 1-second timestamps
+                gone.append(line); skip_blank = True; continue
+        if skip_blank and line == "":
+            skip_blank = False; continue
+        skip_blank = False
+        out.append(line)
+    if gone:
+        trash.mkdir(parents=True, exist_ok=True)
+        with (trash / f"{d}-deleted-{stamp}.md").open("a", encoding="utf-8") as f:
+            f.write("\n\n".join(gone) + "\n")
+        tmp = md.with_suffix(".md.tmp"); tmp.write_text("\n".join(out) + "\n", encoding="utf-8"); tmp.replace(md)
+    return len(gone)
+
+
+def _apply_deletion(e: dict, trash_tag: str) -> dict:
+    """Delete here what a deletion on the other machine took away: its lines by key, its
+    stretches, and this machine's own copy of the same call (or channel, or server), which
+    can start a little earlier or end a little later than the other machine's.
+    The widening stays on this machine (the logged entry keeps the sender's own stretches),
+    so lines the sender kept are never refused when they arrive later."""
+    keys = set(e.get("keys") or [])
+    ranges = [list(x) for x in e.get("ranges") or [] if isinstance(x, list) and len(x) == 3]
+    kind, key, at = e.get("kind"), e.get("key"), e.get("at") or 0
+    forgets = {}
+    for f in e.get("forgets") or []:
+        try:
+            forgets.setdefault(str(f[0]), []).append((int(f[1]), int(f[2])))
+        except (TypeError, ValueError, IndexError):
+            pass
+    if not keys and not ranges and kind not in ("channel", "server"):
+        return {"lines": 0, "touched": {}, "lines_touched": {}, "forgets": forgets}      # a forget: reads only
+    EDGE = 5 * 60000                                  # how far past the sender's own stretch this machine's copy may reach
+    if kind in ("channel", "server", "call"):
+        parts = merged_id_of()
+        extra = []
+        for d in all_days():
+            for c in day_data(d)[1]:
+                if kind in ("channel", "server"):
+                    if group_match(c, kind, key, parts) and c["start"] <= at:
+                        extra.append([c["start"], min(c["end"], at), c["ch"]])
+                else:
+                    for rs, re_, rc in ranges:
+                        if rc and c["ch"] and rc == c["ch"] and c["start"] - sync.DUP_MS <= re_ and rs <= c["end"] + sync.DUP_MS:
+                            extra.append([max(c["start"], rs - EDGE), min(c["end"], re_ + EDGE), c["ch"]])
+        ranges = ranges + [x for x in extra if x not in ranges]
+    touched, n = {}, 0
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + trash_tag
+    trash = TRANSCRIPTS / ".trash"
+    for d in all_days():
+        jl = TRANSCRIPTS / f"{d}.jsonl"
+        stretches = [(s, en) for s, en, _ in ranges]
+        if jl.exists() and (keys or ranges):
+            keep, gone = [], []
+            for line in jl.read_text(encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    keep.append(line); continue
+                if sync.rec_key(r) in keys or sync.in_ranges(r, ranges, slack=sync.DUP_MS if not r.get("tomb") else 0):
+                    gone.append(line)
+                    if not r.get("tomb"):
+                        stretches.append((r["t"], r.get("end", r["t"])))
+                        if r.get("user"):
+                            touched[r["user"]] = min(touched.get(r["user"], r["t"]), r["t"])
+                else:
+                    keep.append(line)
+            if gone:
+                trash.mkdir(parents=True, exist_ok=True)
+                with (trash / f"{d}-deleted-{stamp}.jsonl").open("a", encoding="utf-8") as f:
+                    f.write("\n".join(gone) + "\n")
+                tmp = jl.with_suffix(".jsonl.tmp"); tmp.write_text("".join(l + "\n" for l in keep), encoding="utf-8"); tmp.replace(jl)
+                n += len(gone)
+        n_md = _md_cut(d, stretches, trash, stamp)
+        if not jl.exists():
+            n += n_md
+        _day_cache.pop(d, None)
+    _drop_aliases(ranges)
+    return {"lines": n, "touched": touched, "lines_touched": dict(touched), "forgets": forgets}
+
+
+# Lines that came from the other machine in the last 15 minutes, per person: if this
+# machine transcribes the same speech later (it was behind), it keeps one copy.
+SYNC_RECENT: dict[str, list] = {}
+
+
+def sync_recent_dup(rec: dict) -> dict | None:
+    lst = SYNC_RECENT.get(rec.get("user") or "")
+    if not lst:
+        return None
+    cutoff = time.time() * 1000 - 15 * 60000
+    lst[:] = [x for x in lst if x["t"] >= cutoff and not x.get("_used")]
+    for x in lst:
+        if sync.same_speech(rec, x):
+            x["_used"] = True
+            return x
+    return None
+
+
+def sync_alias(day: str, key: str, t, ch, matched):
+    al = _aliases()
+    al.setdefault(day, {})[key] = [t, ch, matched]
+    _write_json(sync_dir() / "aliases.json", al)
+
+
+def sync_import_records(bundle: dict, peer: str) -> dict:
+    """Deletions first, then the other machine's lines this one is missing. Runs off the event loop."""
+    import bisect
+    tag = re.sub(r"[^a-z0-9]", "", peer.lower())[:12] or "peer"
+    res = {"deleted": 0, "added": 0, "dupes": 0, "days": set(), "users": set(), "touched": {}, "forgets": {}}
+    with JSONL_LOCK:
+        mine = {e["id"] for e in sync_deletions()}
+        for e in bundle.get("deleted") or []:
+            if not isinstance(e, dict) or not e.get("id") or e["id"] in mine:
+                continue
+            r = _apply_deletion(e, tag)
+            res["deleted"] += r["lines"]
+            lines_touched = r.pop("lines_touched", {})
+            for u, w in r.pop("forgets", {}).items():
+                res["forgets"].setdefault(u, []).extend(w)
+            for u, t in r["touched"].items():
+                res["touched"][u] = min(res["touched"].get(u, t), t)
+            with (sync_dir() / "deleted.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+            mine.add(e["id"])
+            if lines_touched and e.get("kind") != "forget":
+                # reads this machine made from those lines before the deletion reached it go too
+                mine.add(sync_log_deletion("forget", e.get("key"), [], [], lines_touched)["id"])
+        dels = sync_deletions()
+        dead_keys = {k for e in dels for k in e.get("keys") or []}
+        dead_ranges = [x for e in dels for x in e.get("ranges") or [] if isinstance(x, list) and len(x) == 3]
+        dead_groups = [(e["kind"], e.get("key"), e.get("at") or 0) for e in dels if e.get("kind") in ("channel", "server")]
+        def dead_group(r):                            # a whole channel or server deleted: anything said there before
+            return any(r["t"] <= at and ((kind == "channel" and ch_key(r) == key) or (kind == "server" and srv_key(r) == key))
+                       for kind, key, at in dead_groups)
+        raw = bundle.get("records") if isinstance(bundle.get("records"), list) else []
+        incoming = [r for _, r in raw if isinstance(r, dict) and isinstance(r.get("t"), (int, float))]
+        if not incoming:
+            return res
+        al = _aliases()
+        local_days = jsonl_days()
+        have = set()
+        for d in local_days:
+            have |= sync_day_keys(d, al)
+        local_cache: dict[str, list] = {}
+        def local(d):
+            if d not in local_cache:
+                local_cache[d] = _raw_day(d)
+            return local_cache[d]
+        day_of = lambda t: dt.datetime.fromtimestamp(t / 1000).strftime("%Y-%m-%d")
+        tombs = [r for r in incoming if r.get("tomb")]
+        lines_in = sorted((r for r in incoming if not r.get("tomb")), key=lambda r: r["t"])
+        replaced_in = {i for r in tombs for i in r.get("replaces") or []}
+        used = {v[2] for m in al.values() for v in m.values() if isinstance(v, list) and len(v) > 2 and v[2]}
+        for m in al.values():                         # a line the other machine rewrote frees the copy it matched here
+            for k, v in m.items():
+                if k in replaced_in and isinstance(v, list) and len(v) > 2:
+                    used.discard(v[2])
+        writes: dict[str, list] = {}
+        alias_add: dict[str, dict] = {}
+        id_day: dict[str, str] = {}
+        idx_cache: dict[str, dict] = {}
+        def index(d):                                 # this machine's own live lines of a day, per person, by time
+            if d not in idx_cache:
+                recs = local(d)
+                gone = {i for r in recs if r.get("tomb") for i in r.get("replaces") or []}
+                by: dict[str, list] = {}
+                for r in recs:
+                    if r.get("id"):
+                        id_day[r["id"]] = d
+                    if r.get("tomb") or r.get("via") == tag or r.get("id") in gone or not r.get("user"):
+                        continue
+                    by.setdefault(r["user"], []).append((r["t"], sync.rec_key(r), r))
+                for v in by.values():
+                    v.sort(key=lambda x: x[0])
+                idx_cache[d] = by
+            return idx_cache[d]
+        for rec in tombs:
+            k = sync.rec_key(rec)
+            if k in have or k in dead_keys:
+                continue
+            for d in local_days:
+                index(d)
+            targets = {id_day.get(i) for i in rec.get("replaces") or []} - {None}
+            for td in targets or {day_of(rec["t"])}:
+                writes.setdefault(td, []).append({**rec, "via": tag})
+            have.add(k); res["added"] += 1
+        for rec in lines_in:
+            k = sync.rec_key(rec)
+            d = day_of(rec["t"])
+            if k in have or k in dead_keys or sync.in_ranges(rec, dead_ranges, slack=sync.DUP_MS) or dead_group(rec):
+                continue
+            if rec.get("id") in replaced_in:          # rewritten there already: hidden by its tomb, so just note it
+                alias_add.setdefault(d, {})[k] = [rec["t"], rec.get("ch"), None]
+                have.add(k); continue
+            lst = index(d).get(rec.get("user") or "", [])
+            i = bisect.bisect_left(lst, rec["t"] - sync.DUP_MS, key=lambda x: x[0])
+            match = None
+            while i < len(lst) and lst[i][0] <= rec["t"] + sync.DUP_MS:
+                if lst[i][1] not in used and lst[i][2].get("id") not in replaced_in and sync.same_speech(rec, lst[i][2]):
+                    match = lst[i][1]; break
+                i += 1
+            if match:
+                alias_add.setdefault(d, {})[k] = [rec["t"], rec.get("ch"), match]
+                used.add(match); have.add(k); res["dupes"] += 1
+                continue
+            rec = {**rec, "via": tag}
+            writes.setdefault(d, []).append(rec)
+            if rec.get("user"):
+                res["users"].add(rec["user"])
+                if rec["t"] >= time.time() * 1000 - 15 * 60000:
+                    SYNC_RECENT.setdefault(rec["user"], []).append(rec)
+            have.add(k); res["added"] += 1
+        TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+        for d, recs in writes.items():
+            with (TRANSCRIPTS / f"{d}.jsonl").open("a", encoding="utf-8") as f:
+                for rec in recs:
+                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            _day_cache.pop(d, None)
+            res["days"].add(d)
+        if alias_add:
+            for d, m in alias_add.items():
+                al.setdefault(d, {}).update(m)
+            _write_json(sync_dir() / "aliases.json", al)
+    return res
+
+
+def _call_resolver():
+    """A call id from the other machine -> this machine's id for that call (its calls can
+    start a few seconds apart): the call on that day covering the time, nearest start first."""
+    calls = {d: day_data(d)[1] for d in all_days()}
+    ids = {c["id"] for cs in calls.values() for c in cs}
+    def resolve(i):
+        if i in ids:
+            return i
+        try:
+            d, t = i.split("@"); t = int(t)
+        except ValueError:
+            return i
+        cands = [c for c in calls.get(d, []) if c["start"] - 60000 <= t <= c["end"]]
+        hit = min(cands, key=lambda c: abs(c["start"] - t), default=None)
+        return hit["id"] if hit else i
+    return resolve
+
+
+def _base_file(peer: str, pending=False) -> Path:
+    tag = re.sub(r"[^a-z0-9]", "", peer.lower())[:24] or "peer"
+    return sync_dir() / f"base-{tag}{'.pending' if pending else ''}.json"
+
+
+def sync_commit(peer: str):
+    """The other machine has what this one merged: what both now hold is the base for next time."""
+    p = _base_file(peer, pending=True)
+    if p.exists():
+        base = _read_json(_base_file(peer), {}) or {}
+        base.update(_read_json(p, {}) or {})
+        _write_json(_base_file(peer), base)
+        p.unlink(missing_ok=True)
+
+
+def sync_settle(peer: str, names: list[str]):
+    """Both machines hold the same of these: that is the base (repairs a round that broke off)."""
+    base = _read_json(_base_file(peer), {}) or {}
+    if "merges" in names: base["merges"] = merge_groups()
+    if "archive" in names: base["archive"] = sorted(archived_keys())
+    if "study" in names: base["study"] = _study_sync()
+    _write_json(_base_file(peer), base)
+
+
+def sync_import_parts(parts: dict, peer: str, mode: str) -> dict:
+    """The other machine's people, names, Q&A, merges, archive, reads, tests and voice history.
+    Runs on the event loop (the same thread that changes these), after the lines are in.
+    mode "pull": this machine started the round; its base moves only once the push lands (commit).
+    mode "push": the other machine already merged; what both hold now is the base."""
+    out = {}
+    base = _read_json(_base_file(peer), {}) or {}
+    newbase = {}
+    if isinstance(parts.get("people"), dict) and HUB:
+        merged, changed = sync.merge_people(HUB.people_dir, parts["people"])
+        if changed:
+            for u in changed:
+                HUB.people_dir[u] = merged[u]          # one key at a time: other threads never see it empty
+            HUB._save_people()
+            HUB.people_dirty |= {u for u in changed if merged.get(u, {}).get("seen") != "voice"}
+            out["people"] = len(changed)
+    if isinstance(parts.get("names"), dict) and HUB:
+        merged, n = sync.merge_names(HUB.names, parts["names"])
+        if n:
+            for u, v in merged.items():
+                HUB.names.setdefault(u, v)
+            HUB.save_names()
+            out["names"] = n
+    if isinstance(parts.get("qa"), dict) and QA_JUDGE:
+        n = 0
+        gone = {k for e in sync_deletions() for k in e.get("keys") or []}
+        for day, rv in parts["qa"].items():
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(day)) or not isinstance(rv, dict):
+                continue
+            alive = {r.get("id") for r in day_data(day)[0] if r.get("id")}
+            with QA_JUDGE.save_lock:
+                got = QA_JUDGE.day_results(day)
+                merged, k = sync.merge_qa(got, rv, alive, gone)
+                if k:
+                    for q in [q for q in got if q not in merged]:
+                        got.pop(q, None)
+                    got.update(merged); QA_JUDGE.save_day(day); n += k
+        if n:
+            out["qa"] = n
+    resolve = None
+    if isinstance(parts.get("merges"), list):
+        resolve = resolve or _call_resolver()
+        norm = lambda gs: [list(dict.fromkeys(map(resolve, g))) for g in gs or [] if isinstance(g, list)]
+        mine = norm(merge_groups())
+        groups = sync.merge_groups3(norm(base.get("merges")), mine, norm(parts["merges"]))
+        if sorted(map(sorted, groups)) != sorted(map(sorted, [g for g in mine if len(set(g)) >= 2])):
+            save_merge_groups(groups); out["merges"] = len(groups)
+        newbase["merges"] = norm(parts["merges"]) if mode == "push" else groups
+    if isinstance(parts.get("archive"), list):
+        resolve = resolve or _call_resolver()
+        norm_keys = lambda ks: {("call:" + resolve(k[5:])) if k.startswith("call:") else k for k in ks or [] if isinstance(k, str)}
+        keys = sync.merge_set3(norm_keys(base.get("archive")), norm_keys(archived_keys()), norm_keys(parts["archive"]))
+        if keys != archived_keys():
+            save_archived(keys); out["archive"] = len(keys)
+        newbase["archive"] = sorted(norm_keys(parts["archive"]) if mode == "push" else keys)
+    if isinstance(parts.get("study"), dict):
+        local = _study_sync()
+        tests, cleared = sync.merge_tests(base.get("study") or {}, local, parts["study"])
+        if tests != local["tests"] or cleared != local["cleared"]:
+            st = load_study(); st["tests"], st["cleared"] = tests, cleared
+            _write_json(study_path(), st, indent=1); out["study"] = len(tests)
+        newbase["study"] = {"tests": parts["study"].get("tests") or {}, "cleared": parts["study"].get("cleared") or {}} if mode == "push" else {"tests": tests, "cleared": cleared}
+    if isinstance(parts.get("personas"), dict) and PERSONA_BOOK:
+        forgets = [f for e in sync_deletions() for f in e.get("forgets") or []]
+        with PERSONA_BOOK.lock:
+            merged, n = sync.merge_personas(PERSONA_BOOK.data, parts["personas"], forgets)
+            if n:
+                for u in [u for u in PERSONA_BOOK.data if u not in merged]:
+                    PERSONA_BOOK.data.pop(u, None)
+                PERSONA_BOOK.data.update(merged); PERSONA_BOOK._save()
+                out["personas"] = n
+    if isinstance(parts.get("presence"), list) and HUB and HUB.presence:
+        if HUB.presence.set_peer(peer, [r for r in parts["presence"] if presence_ok(r)]):
+            out["presence"] = len(parts["presence"])
+    if newbase:
+        if mode == "push":
+            base.update(newbase); _write_json(_base_file(peer), base)
+        else:
+            _write_json(_base_file(peer, pending=True), newbase)
+    return out
+
+
+async def sync_import(name: str, peer: str, mode: str) -> dict:
+    """Take in a bundle the desktop app saved in sync/inbox/<name>.json."""
+    global _people_cache, _rec_guilds
+    f = sync_dir() / "inbox" / f"{name}.json"
+    try:
+        bundle = json.loads(f.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"error": f"Couldn't read what the other computer sent: {type(e).__name__}"}
+    finally:
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    res = await asyncio.to_thread(sync_import_records, bundle, peer)
+    if res["touched"] and PERSONA_BOOK:              # lines deleted here: reads since then used them
+        await asyncio.to_thread(PERSONA_BOOK.forget, res["touched"])
+    if res["forgets"] and PERSONA_BOOK:              # the other machine's deletion: only reads made while those lines existed
+        await asyncio.to_thread(PERSONA_BOOK.forget_windows, res["forgets"])
+    if res["deleted"]:
+        prune_merges()
+    if HUB:
+        HUB.people_dirty |= res["users"]
+    parts = sync_import_parts(bundle.get("parts") or {}, peer, mode) if isinstance(bundle.get("parts"), dict) else {}
+    days = sorted(res["days"])
+    if days or res["deleted"] or parts:              # only when something changed: caches and the dashboard
+        _people_cache = None
+        _insights_cache.clear()
+        _rec_guilds = (0.0, set(), set())
+        if HUB:
+            HUB.publish({"type": "sync", "days": days, "deleted": res["deleted"]})
+    return {"ok": True, "added": res["added"], "dupes": res["dupes"], "deleted": res["deleted"], "days": days, "parts": parts}
+
+
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
@@ -4513,8 +5213,8 @@ async def main():
     persona_book = PersonaBook(hub, persona)
     hub.presence = Presence()
     threading.Thread(target=hub.presence.loop, daemon=True).start()
-    global PERSONA_BOOK
-    PERSONA_BOOK = persona_book
+    global PERSONA_BOOK, QA_JUDGE, HUB
+    PERSONA_BOOK, QA_JUDGE, HUB = persona_book, qa_judge, hub
     threading.Thread(target=updater.loop, daemon=True).start()
     lang_cli = "--language" in sys.argv                  # an explicit --language wins over the setting
     threading.Thread(target=transcriber, args=(q, writer, hub, language, lang_cli), daemon=True).start()
@@ -4562,6 +5262,41 @@ async def main():
             return respond({"id": uid, "username": p.get("username"), "usernames": p.get("usernames", []),
                             "names": p.get("names", []), "nicks": p.get("nicks", []), "lines": person_lines(uid),
                             "voice": voice_person_safe(hub, uid, time.time())})
+        if path.startswith("/api/sync/"):
+            # Only the desktop app (same machine) asks: it carries the data to and from the other computer.
+            if request.headers.get("X-CT") != "1":
+                return respond({"error": "forbidden"}, status=403)
+            from urllib.parse import unquote_plus
+            day_ok = lambda d: bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", d))
+            try:
+                if path == "/api/sync/manifest":
+                    return respond(await asyncio.to_thread(sync_manifest, sync_snapshot()))
+                if path == "/api/sync/keys":
+                    days = [d for d in unquote_plus(params.get("days", "")).split(",") if day_ok(d)]
+                    al = _aliases()
+                    return respond({d: sorted(sync_day_keys(d, al)) for d in days})
+                if path == "/api/sync/records":
+                    d = params.get("day", "")
+                    return respond(await asyncio.to_thread(sync_records, d) if day_ok(d) else [])
+                if path == "/api/sync/parts":
+                    names = [x for x in unquote_plus(params.get("names", "")).split(",") if x]
+                    return respond(sync_parts(names))
+                peer = unquote_plus(params.get("peer", ""))
+                if path in ("/api/sync/import", "/api/sync/commit", "/api/sync/settle") and not re.fullmatch(r"[A-Za-z0-9-]{4,64}", peer):
+                    return respond({"error": "bad request"}, status=400)
+                if path == "/api/sync/import":
+                    name = params.get("name", "")
+                    if not re.fullmatch(r"[a-z0-9-]{4,64}", name):
+                        return respond({"error": "bad request"}, status=400)
+                    return respond(await sync_import(name, peer, "push" if params.get("mode") == "push" else "pull"))
+                if path == "/api/sync/commit":
+                    sync_commit(peer); return respond({"ok": True})
+                if path == "/api/sync/settle":
+                    sync_settle(peer, [x for x in unquote_plus(params.get("names", "")).split(",") if x]); return respond({"ok": True})
+            except Exception as e:
+                print("sync:", type(e).__name__, e, flush=True)
+                return respond({"error": f"Sync failed here: {type(e).__name__}"}, status=500)
+            return respond({"error": "not found"}, status=404)
         if path == "/api/voice":
             try:
                 return respond(voice_view(hub, time.time()))

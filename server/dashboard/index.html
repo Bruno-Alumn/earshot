@@ -660,6 +660,7 @@ body.compact #feedmeta { display: none; }
 .acct .ab { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .acct .ab button { flex: none; padding: 3px 8px; font-size: 11.5px; }
 .pop { max-height: calc(100vh - 80px); overflow-y: auto; }
+.pcode { font: 600 13px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); user-select: all; white-space: nowrap; }
 .tr .tg { font-size: 11.5px; font-weight: 600; color: var(--text-muted); margin: 10px 0 4px; display: flex; align-items: center; gap: 6px; }
 .tr .tg > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tr .tg .flag { width: auto; height: 26px; padding: 0 8px; gap: 5px; display: inline-flex; font-size: 11.5px; font-weight: 500; color: inherit; }
@@ -3008,7 +3009,9 @@ $('#calls').addEventListener('contextmenu', (e) => {
       const n = (await each((k2) => `/api/delete?kind=${kind}&key=${k2}&dry=1`)).reduce((t, x) => ({ calls: t.calls + (x.calls || 0), lines: t.lines + (x.lines || 0) }), { calls: 0, lines: 0 });
       const ok = await confirmBox(`Delete ${what} “${label}”?`,
         `This removes ${n.calls} ${n.calls === 1 ? 'call' : 'calls'} (${n.lines.toLocaleString()} lines) from your transcripts and stats.`,
-        'Removed lines go to the transcripts/.trash folder, so you can still get them back by hand.', 'Delete');
+        syncView?.peers?.length
+          ? `They are deleted on ${syncView.peers.map((p) => p.name).join(' and ')} too, at the next sync. Each computer keeps removed lines in its transcripts/.trash folder.`
+          : 'Removed lines go to the transcripts/.trash folder, so you can still get them back by hand.', 'Delete');
       if (!ok) return;
       await each((k2) => `/api/delete?kind=${kind}&key=${k2}`);
       dayCache.clear();
@@ -3375,12 +3378,14 @@ async function renderSettingsPage(keepScroll, keyNote) {
     ['app', 'App', desk ? 'Login, the call window, voice channels, updates, plugins, accounts' : 'Voice channels, updates and plugins', app],
     ['tx', 'Transcription', 'Speech model, names, words to listen for', tx],
     ['reads', 'Personality reads', 'Who writes them, the API key', reads],
+    ...(desk?.sync ? [['sync', 'Sync', 'Share transcripts with your other computer', '<div id="sync-box"></div>']] : []),
   ];
   const page = document.createElement('div'); page.className = 'page sub-page settings-page';
   page.innerHTML = `<nav class="subnav" aria-label="Settings sections"><h1 class="subnav-h">Settings</h1>${SECS.map(([id, t, d]) => `<button data-jump="${id}" aria-controls="set-${id}"><b>${t}</b><small>${d}</small></button>`).join('')}</nav>
     <div class="sub-body">${SECS.map(([id, t, , body]) => `<section class="sec" id="set-${id}" aria-labelledby="set-${id}-h"><h2 id="set-${id}-h" tabindex="-1">${t}</h2>${body}</section>`).join('')}</div>`;
   box.replaceChildren(page);
   refreshSettingsInline();
+  renderSync();
   if (y) { box.scrollTop = y[0]; document.body.scrollTop = y[1]; } else document.body.scrollTop = 0;   // under 900px the page itself scrolls
   // the save message shows right under the row that was changed
   const note = document.createElement('p'); note.className = 'pnote smsg'; note.setAttribute('role', 'status');
@@ -3447,6 +3452,79 @@ async function renderSettingsPage(keepScroll, keyNote) {
       ah.tabIndex = -1; ah.scrollIntoView({ block: 'start' }); ah.focus({ preventScroll: true });
     }
   }
+}
+// ------------------------------------------------------------ sync with another computer (Settings → Sync)
+let syncView = null, syncMsg = '';
+async function renderSync(v) {
+  const root = document.getElementById('sync-box');
+  if (!root || !desk?.sync) return;
+  syncView = v || await desk.sync();
+  if (!syncView) return;
+  const S = syncView;
+  const status = (p) => {
+    const l = p.last || {};
+    if (S.busy && l.tryAt && (!l.okAt || l.tryAt > l.okAt) && !l.error) return 'Syncing…';
+    if (l.error && (!l.okAt || l.tryAt > l.okAt)) return `Last try ${ago(l.tryAt)}: ${l.error}`;
+    if (l.inAt && (!l.okAt || l.inAt > l.okAt) && !(l.error && l.tryAt > l.inAt)) return `${p.name} synced with this computer ${ago(l.inAt)}.${l.gotLines ? ` It sent ${l.gotLines.toLocaleString()} new ${l.gotLines === 1 ? 'line' : 'lines'}.` : ''}`;
+    if (l.okAt) return `Synced ${ago(l.okAt)}. ${l.got || l.sent ? `Got ${(l.got || 0).toLocaleString()} new ${l.got === 1 ? 'line' : 'lines'}, sent ${(l.sent || 0).toLocaleString()}.` : 'Nothing new.'}`;
+    if (l.gotAt) return `It sent ${(l.gotLines || 0).toLocaleString()} new lines ${ago(l.gotAt)}.`;
+    return 'Not synced yet.';
+  };
+  root.innerHTML = `
+    <div class="srow"><span><b>${esc(S.name)}</b><small>This computer. Transcripts, people, names, reads, merged and archived calls, and voice history sync straight between your computers over Tailscale or your home network, every 3 minutes. Accounts, Discord sign-ins, keys and settings stay on each computer. Deleting a call deletes it on both.</small></span></div>
+    ${S.peers.map((p) => `<div class="srow"><span><b>${esc(p.name)}</b><small>${esc(status(p))}</small></span>
+      <span class="keyin"><button data-s="now"${S.busy ? ' disabled' : ''}>${S.busy ? 'Syncing…' : 'Sync now'}</button><button data-s="unpair" data-id="${esc(p.id)}">Unpair</button></span></div>`).join('')}
+    ${S.pairing && S.pairing.until > Date.now() ? `<div class="srow"><span><b>Pairing code</b><small>On the other computer, open Settings → Sync and type this under Enter a code. It works once, for 10 minutes.</small></span>
+        <span class="keyin"><code class="pcode">${esc(S.pairing.code)}</code><button data-s="cancel">Cancel</button></span></div>`
+      : `<div class="srow"><span><b>Pair a computer</b><small>Shows a code to type on the other computer.</small></span><button data-s="pair">Show a pairing code</button></div>`}
+    <div class="srow key"><span><b>Enter a code</b><small>The code the other computer shows under Pair a computer.</small></span>
+      <span class="keyin"><input data-s="code" aria-label="Pairing code" placeholder="100.64.1.2 ABCD-EFGH-JKLM-NPQR" autocomplete="off" spellcheck="false"><button data-s="join" class="primary">Pair</button></span></div>
+    ${S.listenError ? `<div class="srow"><span><small>The other computer can't reach this one: ${esc(S.listenError)} This one can still sync with it.</small></span></div>` : ''}
+    <p class="pnote" id="sync-msg" role="status">${esc(syncMsg)}</p>`;
+  const say = (t) => { syncMsg = t; const n = root.querySelector('#sync-msg'); if (n) n.textContent = t; };
+  const on = (a, f) => root.querySelectorAll(`[data-s="${a}"]`).forEach((b) => { if (b.tagName === 'BUTTON') b.onclick = f; });
+  on('pair', async () => { const r = await desk.syncPairStart(); syncMsg = r?.error || ''; renderSync(); });
+  on('cancel', async () => { await desk.syncPairCancel(); renderSync(); });
+  on('now', async () => {
+    say('Syncing…');
+    const r = await desk.syncNow();
+    const errs = Object.values(r || {}).filter((x) => x?.error);
+    syncMsg = r?.busy ? 'A sync is already running.' : errs.length ? errs[0].error : 'Synced.';
+    renderSync();
+  });
+  on('unpair', async (e) => {
+    const p = S.peers.find((x) => x.id === e.currentTarget.dataset.id);
+    if (!p || !await confirmBox(`Unpair ${p.name}?`, `This computer stops syncing with ${p.name}. What has synced already stays on both.`, `Unpair it on ${p.name} too, or it keeps asking to be paired again. Pair them again any time with a new code.`, 'Unpair')) return;
+    await desk.syncUnpair(p.id); syncMsg = `Unpaired ${p.name}.`; renderSync();
+  });
+  const input = root.querySelector('[data-s="code"]');
+  on('join', async (e) => {
+    const btn = e.currentTarget, code = input.value.trim();
+    if (!code) { say('Type the code from the other computer first.'); return; }
+    btn.disabled = true; say('Pairing…');
+    const r = await desk.syncJoin(code);
+    if (r?.error) { btn.disabled = false; say(r.error); return; }
+    syncMsg = `Paired with ${r.name}. The first sync starts now; it can take a few minutes.`; renderSync();
+  });
+  input.onkeydown = (e) => { if (e.key === 'Enter') root.querySelector('[data-s="join"]').click(); };
+  clearTimeout(renderSync.t);
+  if (S.pairing) renderSync.t = setTimeout(() => renderSync(), Math.max(1000, S.pairing.until - Date.now() + 500));   // the code runs out: take it off the screen
+}
+desk?.sync?.().then((v) => { syncView = v; }).catch(() => {});
+desk?.onSync?.((v) => { syncView = v; if (document.getElementById('sync-box') && !document.activeElement?.matches?.('[data-s="code"]')) renderSync(v); });
+let syncRefreshT = null;
+function syncArrived(m) {                     // the other computer's lines came in: redraw what shows them
+  for (const d of m.days || []) dayCache.delete(d);
+  if (m.deleted) dayCache.clear();
+  clearTimeout(syncRefreshT);
+  syncRefreshT = setTimeout(async () => {
+    // stay on what you're looking at: a call from the other computer can be newer than yours
+    const was = selected === 'live' ? currentCall()?.id : null;
+    await loadCalls();
+    // a newer call there that none of your accounts here is in: it's the other computer's; stay put
+    if (was && currentCall()?.id !== was && channels.some((c) => c.id === was) && !partsOf(calls[0] || {}).some((p) => p.ch && liveChannels().has(p.ch))) selected = was;
+    await showCall(true);
+  }, 400);
 }
 let settingsJump = null;   // a section to scroll to once the Settings page is drawn (from the status popover)
 // Jump links and scroll-spy for the Settings page. #view-settings scrolls on wide
@@ -4740,6 +4818,7 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.type === 'state' && document.hidden) { liveState = m; sampleRes(m); stateDirty = true; emit('state', m); }   // hidden: catch up when shown
     else if (m.type === 'state') { liveState = m; renderState(); loadVoice(); if (voiceRedraw) redrawVoice(); if (!calls.length) renderWhere(); emit('state', m); }
+    else if (m.type === 'sync') syncArrived(m);
     else if (m.type === 'replace') {
       // the 2B pass rewrote some live lines: swap them in place
       const d = today(), gone = new Set(m.ids || []);

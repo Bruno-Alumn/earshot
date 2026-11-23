@@ -11,9 +11,11 @@ const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, powerSaveB
 const { spawn, execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const http = require('http');
 const { parseProxy, redactProxy, proxyLogin } = require('./proxy');
 const webshare = require('./webshare');
+const { createSync } = require('./sync');
 const { candidates, isIdle, connectedChannelId, isAlone, busiestFirst, classifyLeave, guildOf, flagFor, withLobby } = require('./autojoin');
 
 // Auto-join: a free account hops into an open, flagged voice channel and moves
@@ -1205,6 +1207,7 @@ function updateTray() {
 async function quit() {
   if (quitting) return;
   quitting = true;
+  try { syncer?.stop(); } catch {}
   await stopServer({ quiet: true });
   app.quit();
 }
@@ -1230,8 +1233,34 @@ app.on('login', (event, wc, _details, authInfo, callback) => {
   callback(cred.username, cred.password);
 });
 
+// ----------------------------------------------------------------- sync with another computer
+// Data only (transcripts, people, reads...), straight between two Earshot installs. See sync.js.
+let syncer = null;
+function startSync() {
+  const enc = () => { try { return safeStorage.isEncryptionAvailable(); } catch { return false; } };
+  syncer = createSync({
+    stateFile: path.join(app.getPath('userData'), 'sync.json'),
+    serverBase: BASE.replace(/\/$/, ''),
+    port: Number(process.env.CT_SYNC_PORT) || 8767,
+    name: (IS_MAC ? (() => { try { return require('child_process').execFileSync('/usr/sbin/scutil', ['--get', 'ComputerName'], { encoding: 'utf8' }).trim(); } catch { return ''; } })() : '') || os.hostname().replace(/\.local$/, ''),
+    sealKey: (k) => (enc() ? { enc: safeStorage.encryptString(k).toString('base64') } : { key: k }),
+    unsealKey: (o) => (o?.enc ? safeStorage.decryptString(Buffer.from(o.enc, 'base64')) : o?.key),
+    log: (m) => console.log(m),
+    onChange: () => { if (dash && !dash.isDestroyed()) dash.webContents.send('ct:sync-changed', syncer.view()); },
+  });
+  syncer.start();
+}
+ipcMain.handle('ct:sync', (e) => (fromDash(e) && syncer ? syncer.view() : null));
+ipcMain.handle('ct:sync-pair-start', (e) => (fromDash(e) && syncer ? syncer.startPairing() : null));
+ipcMain.handle('ct:sync-pair-cancel', (e) => { if (fromDash(e) && syncer) syncer.cancelPairing(); return null; });
+ipcMain.handle('ct:sync-join', (e, code) => (fromDash(e) && syncer ? syncer.join(String(code || '')) : null));
+ipcMain.handle('ct:sync-now', async (e) => (fromDash(e) && syncer ? syncer.syncNow() : null));
+ipcMain.handle('ct:sync-unpair', (e, id) => (fromDash(e) && syncer ? syncer.unpair(String(id)) : null));
+ipcMain.handle('ct:sync-rename', (e, name) => (fromDash(e) && syncer ? syncer.rename(String(name || '')) : null));
+
 app.whenReady().then(async () => {
   accounts = loadAccounts(); saveAccounts();
+  startSync();
   loadChannelFlags();
   for (const a of accounts) await applyProxy(a);    // before any Discord window loads
   buildMenu();

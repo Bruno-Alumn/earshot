@@ -17,14 +17,16 @@ jobs:
         with: { node-version: 22 }
       - name: App + dashboard JavaScript
         run: |
-          for f in app/desktop/*.js test/app-test.js test/multi-test.js test/proxy-app-test.js test/proxy-test.js test/autojoin-test.js test/autojoin-app-test.js; do node --check "$f"; done
+          for f in app/desktop/*.js test/app-test.js test/multi-test.js test/proxy-app-test.js test/proxy-test.js test/autojoin-test.js test/autojoin-app-test.js test/sync-test.js test/sync-app-test.js; do node --check "$f"; done
           node -e "const s=require('fs').readFileSync('server/dashboard/index.html','utf8'); new Function(s.slice(s.indexOf('<script>')+8, s.lastIndexOf('</script>'))); console.log('dashboard ok')"
       - name: Proxy parsing test
         run: node test/proxy-test.js
       - name: Auto-join ranking test
         run: node test/autojoin-test.js
+      - name: Sync merge rules test
+        run: python3 test/sync_test.py
       - name: Python
-        run: python3 -m py_compile server/server.py server/voiceprint.py app/windows/call_transcriber.pyw test/server_e2e.py test/vad_test.py test/voiceprint_test.py test/force_english_test.py test/merge_test.py test/vocab_test.py
+        run: python3 -m py_compile server/server.py server/sync.py test/sync_test.py server/voiceprint.py app/windows/call_transcriber.pyw test/server_e2e.py test/vad_test.py test/voiceprint_test.py test/force_english_test.py test/merge_test.py test/vocab_test.py
 
   test:
     name: Transcription test (${{ matrix.os }})
@@ -99,6 +101,14 @@ jobs:
         shell: bash
         env: { SERVER_ARGS: "--engine onnx" }
         run: node test/autojoin-app-test.js "$RUNNER_TEMP/autojoin-test"
+      - name: Sync test (two installs pair and swap data both ways, deletions, rewrites)
+        shell: bash
+        env: { SERVER_ARGS: "--engine onnx" }
+        run: node test/sync-test.js "$RUNNER_TEMP/sync-test"
+      - name: Sync in the app (Settings, pairing code, a round against the app)
+        shell: bash
+        env: { SERVER_ARGS: "--engine onnx" }
+        run: node test/sync-app-test.js "$RUNNER_TEMP/sync-app-test"
 
   build-mac:
     name: Build macOS app + Windows package

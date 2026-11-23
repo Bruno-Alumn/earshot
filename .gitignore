@@ -38,3 +38,4 @@ presence-open.json
 secrets.json
 study.json
 status.log.*
+sync/
